@@ -252,6 +252,10 @@ def recover(self):
 
 最后一行没有换行且 JSON 不完整，通常表示进程在一次 append 中途退出，可以忽略并报告 `ignored_partial_tail=True`。但中间坏行、完整坏行或 sequence 跳号都意味着证据链不再可信，reader 会抛出 `TranscriptCorruptionError`，而不是悄悄继续。
 
+只读恢复不代表可以继续向原文件追加。`append()` 会先重新读取日志；若发现上述 partial tail，在打开追加写入之前抛出 `TranscriptCorruptionError`，原文件字节保持不变。否则新 JSON 会直接接在残缺内容后面，将原本可忽略的尾部变成完整坏行，使后续回放失败。调用方应保留旧日志，改用新的 transcript 文件；本例不会自动截断、补换行、复制历史或迁移会话。
+
+这一检查针对当前读取结果，文件不存在时会清除之前观察到的 partial-tail 标志；它不提供多写入者互斥，也无法保证检查完成后文件不会被其他进程修改。正常完整日志仍按原序号追加。
+
 ### Transcript 不是 Memory
 
 Transcript 按 session 保存发生过的事件，目标是忠实和可回放；s10 Workspace Memory 则跨 session 选择稳定项目事实，目标是相关性与长期保留。关闭 runtime 不删除 transcript，replay 也不会把 transcript 自动晋升成 memory。

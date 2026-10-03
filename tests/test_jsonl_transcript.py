@@ -83,6 +83,55 @@ def test_fresh_instance_replays_then_continues_sequence(s09, tmp_path: Path) -> 
     assert [event["sequence"] for event in replacement._read_all_events()] == [1, 2]
 
 
+@pytest.mark.parametrize("valid_count", [0, 1])
+@pytest.mark.parametrize("restart", [False, True])
+def test_partial_tail_blocks_append_without_destroying_replay(s09, tmp_path, monkeypatch, valid_count, restart):
+    path = tmp_path / "session.jsonl"
+    transcript = s09.JSONLTranscript(path)
+    if valid_count:
+        transcript.append({"type": "message", "role": "user", "content": "saved"})
+    with path.open("ab") as handle:
+        handle.write(b'{"type":"message","content":"unfinished')
+    before = path.read_bytes()
+    if restart:
+        transcript = s09.JSONLTranscript(path)
+    state = transcript.replay_state()
+    assert state.ignored_partial_tail
+    assert state.total_events == valid_count
+
+    def forbidden_open(*args, **kwargs):
+        raise AssertionError("partial tail must be rejected before opening for append")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(s09.os, "open", forbidden_open)
+        for _ in range(2):
+            with pytest.raises(s09.TranscriptCorruptionError, match="partial tail"):
+                transcript.append({"type": "message", "role": "user", "content": "new"})
+    assert path.read_bytes() == before
+    recovered = s09.JSONLTranscript(path).replay_state()
+    assert recovered == state
+
+
+def test_append_detects_tail_without_prior_replay(s09, tmp_path):
+    path = tmp_path / "session.jsonl"
+    path.write_text('{"type":', encoding="utf-8")
+    with pytest.raises(s09.TranscriptCorruptionError, match="partial tail"):
+        s09.JSONLTranscript(path).append({"type": "message", "role": "user", "content": "new"})
+    assert path.read_text() == '{"type":'
+
+
+def test_partial_tail_flag_is_reset_when_file_is_absent(s09, tmp_path):
+    path = tmp_path / "session.jsonl"
+    path.write_text('{"type":', encoding="utf-8")
+    transcript = s09.JSONLTranscript(path)
+    assert transcript.replay_state().ignored_partial_tail
+    # Simulate explicit caller removal, not automatic repair by the transcript.
+    path.unlink()
+    assert not transcript.replay_state().ignored_partial_tail
+    transcript.append({"type": "message", "role": "user", "content": "new"})
+    assert transcript.replay_state().next_sequence == 2
+
+
 def test_memory_candidate_is_explicit_and_keeps_exact_transcript_source(s09, tmp_path: Path) -> None:
     path = tmp_path / "session-42.jsonl"
     transcript = s09.JSONLTranscript(path)

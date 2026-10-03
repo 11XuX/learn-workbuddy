@@ -180,6 +180,13 @@ class JSONLTranscript:
                 "event payload contains reserved envelope fields: " + ", ".join(reserved)
             )
         existing = self._read_all_events()
+        # Read-only recovery may ignore an incomplete tail, but appending would
+        # turn it into a corrupt complete line. Preserve the evidence unchanged.
+        if self._ignored_partial_tail:
+            raise TranscriptCorruptionError(
+                f"{self.path.name}: cannot append after partial tail; "
+                "preserve this log and use a new transcript file"
+            )
         sequence = existing[-1]["sequence"] + 1 if existing else 1
         envelope = {
             **deepcopy(event),
@@ -201,11 +208,12 @@ class JSONLTranscript:
 
     def _read_all_events(self) -> list[dict]:
         """Read all events from the JSONL file."""
+        # The flag describes this read, not an earlier observation of the path.
+        self._ignored_partial_tail = False
         if not self.path.exists():
             return []
         events: list[dict] = []
         lines = self.path.read_text(encoding="utf-8").splitlines(keepends=True)
-        self._ignored_partial_tail = False
         for line_number, line in enumerate(lines, start=1):
             if not line.strip():
                 continue
