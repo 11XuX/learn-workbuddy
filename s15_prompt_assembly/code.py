@@ -1385,7 +1385,8 @@ def run_read(path: str) -> str:
 
 def run_glob(pattern: str) -> str:
     import glob as g
-    results = sorted(g.glob(str(WORKDIR / pattern)))[:20]
+    matches = g.glob(os.path.join(g.escape(str(WORKDIR)), pattern))
+    results = sorted(r for r in matches if Path(r).resolve().is_relative_to(WORKDIR))[:20]
     return "\n".join(Path(r).name for r in results) if results else "(no matches)"
 
 
