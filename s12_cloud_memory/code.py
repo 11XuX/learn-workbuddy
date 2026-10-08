@@ -755,10 +755,15 @@ class RemoteMemoryStore:
         - 目标必须存在于本用户作用域。每个作用域使用独立的 store 文件，别人的 memory_id
           不在本文件里，因此按未知目标拒绝；文件里混入其他作用域的记录则在 read_all 时直接报错；
         - 不能撤回一条撤回记录，避免“撤回的撤回”让语义变得不可判定；
-        - 同一目标已被撤回时幂等返回已有的那条，并发重试也只会落盘一条。
+        - 同一目标已被撤回时幂等返回已有的那条，并发重试也只会落盘一条；
+        - 目标按原始 memory_id 精确匹配，与 append 存下的 ID 保持一致。
         """
 
-        target_id = _clean_text(memory_id, field_name="retract memory_id", max_chars=200)
+        # 目标按原始 memory_id 精确匹配：append 存的就是原始 ID，这里不做空白归一化或
+        # 长度限制，否则只差空白的两个 ID 会撤错，已存下的长 ID 也撤不掉。
+        if not isinstance(memory_id, str) or not memory_id:
+            raise RemoteMemoryValidationError("retract memory_id must be a non-empty string")
+        target_id = memory_id
         clean_reason = _clean_text(
             reason, field_name="retraction reason", max_chars=2_000
         )

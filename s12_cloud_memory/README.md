@@ -394,6 +394,7 @@ retract(memory_id, reason, source)
 - 每个用户作用域使用独立的 store 文件，别人的 `memory_id` 不在本作用域的文件里，所以跨作用域撤回按“未知目标”拒绝，不会碰到对方的文件；文件里混入其他作用域的记录，则在 `read_all()` 读取时直接抛出 `RemoteMemoryScopeError`；
 - 不允许“撤回一条撤回”。如果想恢复被撤回的内容，应该重新追加一条新记录，让历史保持单向、可判定；
 - 重复撤回时以第一条为准，后来的 `reason` 不会覆盖已有的审计记录；
+- 目标按原始 `memory_id` 精确匹配，不做空白归一化，也不加长度限制。`append` 存的是原始 ID，两边必须一致：否则只差空白的两个 ID 会撤错，已经存下的长 ID 也撤不掉；
 - `append(kind=RETRACTION)` 会被拒绝，撤回只能走带目标校验的 `retract()`；
 - 普通记录序列化时不写 `retracts` 字段，旧 JSONL 读取时默认 `None`，已有数据不需要迁移。字段不一致（撤回记录缺 `retracts`，或普通记录带 `retracts`）按损坏处理。
 
