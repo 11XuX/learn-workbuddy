@@ -432,6 +432,20 @@ def _clean_text(value: object, *, field_name: str, max_chars: int) -> str:
     return text
 
 
+def _record_id(value: object, *, field_name: str) -> str:
+    """写入端统一的记录 ID 校验：None 或空串自动生成，其余必须是字符串且原样保存。
+
+    不做空白归一化，也不做 str() 隐式转换：整数 123 若被写成 "123"，就会和已有的
+    字符串 ID 撞在一起，或者让调用方拿到的 ID 与落盘的 ID 不一致。
+    """
+
+    if value is None or value == "":
+        return uuid.uuid4().hex
+    if not isinstance(value, str):
+        raise RemoteMemoryValidationError(f"{field_name} must be a string")
+    return value
+
+
 def _validate_source(source: MemorySource) -> MemorySource:
     """Reject anonymous or temporally invalid provenance before persistence."""
 
@@ -698,7 +712,7 @@ class RemoteMemoryStore:
             # 撤回必须经过 retract() 的目标校验，不能当作普通记录直接追加。
             raise RemoteMemoryValidationError("use retract() to write retraction records")
         record = StoredMemory(
-            memory_id=memory_id or uuid.uuid4().hex,
+            memory_id=_record_id(memory_id, field_name="memory_id"),
             user_scope=self.user_scope,
             kind=MemoryKind(kind),
             content=_clean_text(
@@ -768,6 +782,8 @@ class RemoteMemoryStore:
             reason, field_name="retraction reason", max_chars=2_000
         )
         clean_source = _validate_source(source)
+        # 撤回记录的 ID 与普通记录共用一套写入端校验，在加锁前拒绝非字符串。
+        new_id = _record_id(retraction_id, field_name="retraction_id")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with _exclusive_store_lock(self.path):
             records = self.read_all()
@@ -789,7 +805,7 @@ class RemoteMemoryStore:
                 return existing
 
             record = StoredMemory(
-                memory_id=retraction_id or uuid.uuid4().hex,
+                memory_id=new_id,
                 user_scope=self.user_scope,
                 kind=MemoryKind.RETRACTION,
                 content=clean_reason,
