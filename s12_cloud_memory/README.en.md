@@ -283,13 +283,13 @@ The store now exposes two views:
 retract(memory_id, reason, source)
   -> validate reason / source before locking
   -> take the exclusive lock, read_all()
-  -> unknown target (including another scope) -> reject
+  -> unknown target (another user's id)       -> reject
   -> target is itself a retraction            -> reject
   -> target already retracted                 -> return the existing record
   -> append one RETRACTION record
 ```
 
-Validation and append share one critical section with `append`, so concurrent retractions of the same id persist exactly one record. `append(kind=RETRACTION)` is rejected. Ordinary records omit `retracts` when serialized, and legacy lines without the field load as `None`. `RecallResult.retracted_records` reports how many conversation records were hidden, so a trace can explain a missing hit. Physical purge is out of scope and left as an exercise.
+Each user scope has its own store file, so another user's `memory_id` is simply absent and is rejected as unknown; a foreign-scope record mixed into the file still makes `read_all()` raise `RemoteMemoryScopeError`. Validation and append share one critical section with `append`, so concurrent retractions of the same id persist exactly one record. `append(kind=RETRACTION)` is rejected. Ordinary records omit `retracts` when serialized, and legacy lines without the field load as `None`. `RecallResult.retracted_records` reports how many conversation records were hidden, so a trace can explain a missing hit. Physical purge is out of scope and left as an exercise.
 
 ### Try It
 

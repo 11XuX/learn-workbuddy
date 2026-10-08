@@ -391,7 +391,7 @@ retract(memory_id, reason, source)
 几个设计取舍：
 
 - 校验和追加在同一个临界区里，与 `append` 共用同一个写入点。并发撤回同一个 id 时，只有第一个线程真正落盘，其余线程读到它并原样返回；
-- 其他用户作用域的记录在 `read_all()` 里本来就不可见，所以跨作用域撤回按“未知目标”拒绝，不会碰到对方的文件；
+- 每个用户作用域使用独立的 store 文件，别人的 `memory_id` 不在本作用域的文件里，所以跨作用域撤回按“未知目标”拒绝，不会碰到对方的文件；文件里混入其他作用域的记录，则在 `read_all()` 读取时直接抛出 `RemoteMemoryScopeError`；
 - 不允许“撤回一条撤回”。如果想恢复被撤回的内容，应该重新追加一条新记录，让历史保持单向、可判定；
 - 重复撤回时以第一条为准，后来的 `reason` 不会覆盖已有的审计记录；
 - `append(kind=RETRACTION)` 会被拒绝，撤回只能走带目标校验的 `retract()`；
@@ -467,7 +467,7 @@ s09 transcript 可以成为 s12 StoredMemory 的 source，但“有 transcript�
 - 没有匹配：返回带 query、searched/candidate count 和
   `empty_reason="no_matching_terms"` 的空 `hits`，renderer 不注入空上下文；
 - Recall 多次执行：不会改变 durable store；
-- Profile snapshot：只用于 profile selection，不混入 conversation hits。
+- Profile snapshot：只用于 profile selection，不混入 conversation hits；
 - 撤回不存在、其他作用域或本身就是撤回记录的 `memory_id`：拒绝写入；
 - 重复或并发撤回同一个 `memory_id`：幂等，只保留第一条撤回记录；
 - 被撤回的记录：不进入召回和 Profile 选择，但仍保留在 `read_all()` 的审计视图中。

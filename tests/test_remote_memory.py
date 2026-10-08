@@ -581,7 +581,7 @@ def test_retract_rejects_unknown_foreign_or_retraction_targets(
 
     with pytest.raises(s12.RemoteMemoryValidationError, match="unknown memory_id"):
         alice.retract("missing-memory", reason="不存在。", source=_user_request(s12))
-    # 其他作用域的记录在本作用域里不可见，因此同样按未知目标拒绝，也不会动到对方的文件。
+    # 每个作用域使用独立的 store 文件，别人的 memory_id 不在本文件里，按未知目标拒绝，也不会动到对方的文件。
     with pytest.raises(s12.RemoteMemoryValidationError, match="unknown memory_id"):
         alice.retract("bob-memory", reason="越权撤回。", source=_user_request(s12))
     with pytest.raises(s12.RemoteMemoryValidationError, match="retraction record"):
