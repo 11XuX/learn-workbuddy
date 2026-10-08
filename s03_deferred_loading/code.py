@@ -382,17 +382,17 @@ def mock_bash(command: str) -> str:
 def mock_glob(pattern: str) -> str:
     return f"[MOCK] Matches for '{pattern}':\nsrc/main.py\nsrc/utils.py"
 
-def mock_image_gen(prompt: str, size: str = "1024x1024") -> str:
+def mock_image_gen(prompt: str, size: str = "1024x1024", style: str = "natural", seed: int | None = None) -> str:
     slug = prompt.lower().replace(" ", "_")[:30]
     return f"[MOCK] Generated image: {slug}.png ({size})"
 
-def mock_image_edit(image_path: str, instruction: str) -> str:
+def mock_image_edit(image_path: str, instruction: str, size: str | None = None) -> str:
     return f"[MOCK] Edited {image_path}: {instruction} → saved."
 
 def mock_notebook_edit(notebook_path: str, cell_index: int, cell_type: str, source: str) -> str:
     return f"[MOCK] Edited cell {cell_index} ({cell_type}) in {notebook_path}"
 
-def mock_lsp(operation: str, file_path: str) -> str:
+def mock_lsp(operation: str, file_path: str, line: int | None = None, character: int | None = None) -> str:
     return f"[MOCK] LSP {operation} on {file_path}: 3 definitions found."
 
 def mock_computer_use(action: str, coordinate: list = None, text: str = "") -> str:
