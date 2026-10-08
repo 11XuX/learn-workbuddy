@@ -162,7 +162,7 @@ def run_glob(pattern: str) -> str:
     try:
         results = [
             str(Path(match).resolve().relative_to(WORKDIR))
-            for match in globmod.glob(str(WORKDIR / pattern))
+            for match in globmod.glob(os.path.join(globmod.escape(str(WORKDIR)), pattern))
             if Path(match).resolve().is_relative_to(WORKDIR)
         ]
         return "\n".join(results) if results else "(no matches)"
