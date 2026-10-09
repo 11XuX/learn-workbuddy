@@ -540,9 +540,11 @@ def build_created_skill_md(title, summary, read_when, content, permissions=None)
     for name, value in [("title", title), ("summary", summary)] + [
             ("read_when", item) for item in read_when]:
         # 防止 frontmatter 注入：必须是单行文本，且不能出现 YAML 分隔符
-        if not isinstance(value, str) or not value.strip() or "---" in value \
-                or "\n" in value or "\r" in value:
-            raise SkillPermissionError(f"{name} 必须是非空单行文本，且不能包含 '---'")
+        if not isinstance(value, str) or not value.strip() or value != value.strip() \
+                or "---" in value or "\n" in value or "\r" in value:
+            raise SkillPermissionError(f"{name} 必须是非空单行文本，首尾无空白，且不能包含 '---'")
+    if not isinstance(content, str):
+        raise SkillPermissionError("content 必须是字符串")
     requested = parse_skill_permissions(permissions)
     # JSON 字符串/列表也是合法的 YAML 标量，冒号、引号等不会破坏 frontmatter
     q = lambda value: json.dumps(value, ensure_ascii=False)
@@ -583,19 +585,19 @@ def create_skill(title: str, summary: str, read_when: list[str],
     In real WorkBuddy, this writes to ~/.workbuddy/skills/{title}/SKILL.md
     with agent_created: true in frontmatter.
     """
+    # 先校验字段再查同名：任何模型输入都只返回拒绝文本，不让 agent 崩掉
+    try:
+        skill_md, requested_permissions = build_created_skill_md(
+            title, summary, read_when, content, permissions
+        )
+    except Exception as exc:
+        return f"拒绝创建技能: {exc}"
     # Check if already exists
     existing = [s for s in skill_index if s.title == title]
     if existing:
         return f"技能 '{title}' 已存在。"
     if title in pending_skills:
         return f"技能 '{title}' 已在待审批队列中，未覆盖。"
-
-    try:
-        skill_md, requested_permissions = build_created_skill_md(
-            title, summary, read_when, content, permissions
-        )
-    except SkillPermissionError as exc:
-        return f"拒绝创建技能: {exc}"
 
     # 写入边界：先审计，再决定拒绝 / 待审批 / 直接入索引
     level, report = audit_skill(skill_md, requested_permissions=requested_permissions)

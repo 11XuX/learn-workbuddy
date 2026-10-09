@@ -151,6 +151,10 @@ def test_skill_create_goes_through_loaded_skill_overlay(s16) -> None:
     {"title": "evil---skill"},
     {"read_when": ["整理", "x\nagent_created: false"]},
     {"read_when": "整理"},
+    # 类型错误和首尾空白：先校验再查同名，只返回拒绝文本
+    {"title": ["git-commit"]}, {"title": {"x": 1}}, {"content": 123},
+    {"title": " net "}, {"title": "git-commit "}, {"read_when": [" 整理"]},
+    {"permissions": "network"},
 ])
 def test_frontmatter_injection_is_rejected(s16, override) -> None:
     before = _titles(s16)
