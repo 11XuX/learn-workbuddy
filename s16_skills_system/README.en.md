@@ -244,6 +244,8 @@ def skill_tool(skill: str) -> str:
 
 ### Security Audit
 
+After a task, the model can call the `SkillCreate` tool to propose saving the workflow as a new skill; the harness audits it before deciding whether to write:
+
 ```python
 def create_skill(title: str, summary: str, content: str) -> str:
     """Create a new skill.
@@ -263,6 +265,13 @@ agent_created: true
 
 {content}
 """
+    # Audit before writing: P0 is rejected, P1 waits for approval, only P2 is written
+    level, report = audit_skill(skill_md)
+    if level == "P0":
+        return f"Rejected skill '{title}': {report}"
+    if level == "P1":
+        pending_skills[title] = PendingSkill(title, skill_md, report, time.time())
+        return f"Skill '{title}' is pending user approval: {report}"
     (skill_dir / "SKILL.md").write_text(skill_md)
 
     # Add to the index
@@ -490,6 +499,19 @@ const SkillTool = {
 ```
 
 ### Automatic Skill Saving
+
+A WorkBuddy design principle: **after a multi-step task, capture the workflow as a skill**. In this chapter the model proposes the save through `SkillCreate`, and every write is audited first.
+
+### Write-Boundary Audit and Pending Approval
+
+`SkillCreate` lets the model propose a write, but the decision is not the model's:
+
+1. title, summary, and every read_when item must be single-line text without `---`, and values are written into frontmatter as JSON-quoted scalars. The assembled SKILL.md is parsed once, and audit, pending approval, and indexing share the single parsed permissions object; a mismatch with the request is rejected.
+2. If `audit_skill()` returns P0 the skill is rejected; P1 (network/install commands, or requested network or write-path permissions) goes into the in-memory `pending_skills` with a "pending user approval" reply; P2 goes straight into the index.
+3. The tool schema has no approval field. Only the user typing `approve <title>` / `reject <title>` in the terminal can resolve a pending item. approve re-audits and rejects only on P0; if a same-name skill entered the index meanwhile, it rejects and clears the pending item. Submitting the same name again returns "already pending" without overwriting.
+4. `SkillCreate` goes through `authorize_loaded_skill_tool()` like every other tool: with no loaded skill the base policy applies; once skills are loaded, at least one loaded manifest must declare `SkillCreate` (the teaching version takes the union of loaded skills). Skill permissions narrow rather than widen, so to save skills inside a skill flow, declare `SkillCreate` in the manifest.
+
+This is a single-process, in-memory simplification: pending items vanish when the process exits. A real harness persists pending items and asks the user to confirm through a UI.
 
 ### Code Walkthrough
 

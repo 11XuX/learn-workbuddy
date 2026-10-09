@@ -519,6 +519,63 @@ def load_skill(title: str) -> str:
     return f"未找到技能 '{title}'。可用: {[s.title for s in skill_index]}"
 
 
+@dataclass
+class PendingSkill:
+    """等待用户审批的技能写入请求（单进程、内存态的教学简化）。"""
+    title: str
+    skill_md: str
+    audit_report: str
+    requested_at: float
+    # 与审计时是同一个 SkillPermissions 对象，approve 时直接复用
+    permissions: SkillPermissions = field(default_factory=SkillPermissions)
+
+
+pending_skills: dict[str, PendingSkill] = {}
+
+
+def build_created_skill_md(title, summary, read_when, content, permissions=None):
+    """拼出 SKILL.md 并只解析一次，返回 (skill_md, 唯一的 SkillPermissions 对象)。"""
+    if not isinstance(read_when, list):
+        raise SkillPermissionError("read_when 必须是字符串列表")
+    for name, value in [("title", title), ("summary", summary)] + [
+            ("read_when", item) for item in read_when]:
+        # 防止 frontmatter 注入：必须是单行文本，且不能出现 YAML 分隔符
+        if not isinstance(value, str) or not value.strip() or "---" in value \
+                or "\n" in value or "\r" in value:
+            raise SkillPermissionError(f"{name} 必须是非空单行文本，且不能包含 '---'")
+    requested = parse_skill_permissions(permissions)
+    # JSON 字符串/列表也是合法的 YAML 标量，冒号、引号等不会破坏 frontmatter
+    q = lambda value: json.dumps(value, ensure_ascii=False)
+    skill_md = f"""---
+title: {q(title)}
+summary: {q(summary)}
+read_when: {q(read_when)}
+agent_created: true
+permissions: {q(requested.as_dict())}
+---
+
+{content}"""
+    try:
+        fm, _ = parse_frontmatter(skill_md)
+        parsed = parse_skill_permissions(fm.get("permissions"))
+    except Exception as exc:
+        raise SkillPermissionError(f"SKILL.md 解析失败: {exc}") from exc
+    if parsed != requested or [fm.get("title"), fm.get("summary"),
+                               fm.get("read_when")] != [title, summary, read_when]:
+        raise SkillPermissionError("解析结果与请求的字段或权限不一致")
+    return skill_md, parsed
+
+
+def _index_created_skill(skill_md: str, permissions: SkillPermissions) -> None:
+    # 只在审计为 P2 或用户 approve 之后调用，才真正写入索引
+    fm, body = parse_frontmatter(skill_md)
+    skill_index.append(Skill(
+        title=fm["title"], summary=fm["summary"], read_when=fm["read_when"],
+        path=f"(memory)/{fm['title']}/SKILL.md", content=body,
+        agent_created=True, permissions=permissions))
+    SEED_SKILLS[fm["title"]] = skill_md  # Keep in sync
+
+
 def create_skill(title: str, summary: str, read_when: list[str],
                  content: str, permissions: dict | None = None) -> str:
     """Create a new skill.
@@ -530,45 +587,58 @@ def create_skill(title: str, summary: str, read_when: list[str],
     existing = [s for s in skill_index if s.title == title]
     if existing:
         return f"技能 '{title}' 已存在。"
+    if title in pending_skills:
+        return f"技能 '{title}' 已在待审批队列中，未覆盖。"
 
-    requested_permissions = parse_skill_permissions(permissions)
+    try:
+        skill_md, requested_permissions = build_created_skill_md(
+            title, summary, read_when, content, permissions
+        )
+    except SkillPermissionError as exc:
+        return f"拒绝创建技能: {exc}"
 
-    # Build SKILL.md content
-    triggers_yaml = "\n".join(f"  - {t}" for t in read_when)
-    permissions_yaml = json.dumps(
-        requested_permissions.as_dict(), ensure_ascii=False
-    )
-    skill_md = f"""---
-title: {title}
-summary: {summary}
-read_when:
-{triggers_yaml}
-agent_created: true
-permissions: {permissions_yaml}
----
+    # 写入边界：先审计，再决定拒绝 / 待审批 / 直接入索引
+    level, report = audit_skill(skill_md, requested_permissions=requested_permissions)
+    if level == "P0":
+        return f"拒绝创建技能 '{title}': {report}"
+    if level == "P1":
+        pending_skills[title] = PendingSkill(title, skill_md, report,
+                                             time.time(), requested_permissions)
+        return f"技能 '{title}' 待用户审批: {report}"
 
-{content}"""
-
-    fm, body = parse_frontmatter(skill_md)
-    new_skill = Skill(
-        title=title,
-        summary=summary,
-        read_when=read_when,
-        path=f"(memory)/{title}/SKILL.md",
-        content=body,
-        loaded=False,
-        agent_created=True,
-        permissions=requested_permissions,
-    )
-    skill_index.append(new_skill)
-    SEED_SKILLS[title] = skill_md  # Keep in sync
-
+    _index_created_skill(skill_md, requested_permissions)
     return f"技能 '{title}' 已创建。"
+
+
+def approve_skill(title: str) -> str:
+    """交互命令 approve：只有用户能把待审批技能移入索引。"""
+    pending = pending_skills.pop(title, None)
+    if pending is None:
+        return f"没有待审批的技能 '{title}'。"
+    if any(s.title == title for s in skill_index):
+        return f"拒绝: 审批期间已有同名技能 '{title}' 进入索引，待审批项已清除。"
+    # 重新审计：P1 是用户这次明确接受的风险，只有 P0 才拒绝
+    level, report = audit_skill(
+        pending.skill_md, requested_permissions=pending.permissions
+    )
+    if level == "P0":
+        return f"拒绝: 重新审计为 P0，待审批项已清除。{report}"
+    _index_created_skill(pending.skill_md, pending.permissions)
+    return f"技能 '{title}' 已经用户批准并创建。"
+
+
+def reject_skill(title: str) -> str:
+    """交互命令 reject：丢弃待审批技能。"""
+    if pending_skills.pop(title, None) is None:
+        return f"没有待审批的技能 '{title}'。"
+    return f"技能 '{title}' 的写入请求已被拒绝。"
 
 
 def audit_skill(
     skill_content: str,
     previous_permissions: SkillPermissions | None = None,
+    *,
+    requested_permissions: SkillPermissions | None = None,
 ) -> tuple[str, str]:
     """Security audit a skill before installing.
 
@@ -581,7 +651,8 @@ def audit_skill(
     """
     try:
         frontmatter, _ = parse_frontmatter(skill_content)
-        requested_permissions = parse_skill_permissions(
+        # 调用方已解析过权限时直接复用同一个对象；旧调用方式不受影响
+        requested_permissions = requested_permissions or parse_skill_permissions(
             frontmatter.get("permissions")
         )
     except SkillPermissionError as exc:
@@ -697,6 +768,22 @@ TOOLS = [
         },
     },
     {
+        # 没有任何审批字段：模型无法替自己批准
+        "name": "SkillCreate",
+        "description": "Save a reusable workflow as a new skill. The harness audits it first: risky skills wait for user approval, dangerous ones are rejected.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"}, "summary": {"type": "string"},
+                "read_when": {"type": "array", "items": {"type": "string"}},
+                "content": {"type": "string"},
+                "permissions": {"type": "object", "description":
+                    "{tools: [...], network: bool, paths: {read: [...], write: [...]}}"},
+            },
+            "required": ["title", "summary", "read_when", "content"],
+        },
+    },
+    {
         "name": "bash",
         "description": "Run a shell command.",
         "input_schema": {
@@ -716,7 +803,9 @@ TOOLS = [
     },
 ]
 
-TOOL_HANDLERS = {"Skill": run_skill, "bash": run_bash, "read_file": run_read}
+# SkillCreate 只能提议写入，审计和审批由 harness 与用户决定
+TOOL_HANDLERS = {"Skill": run_skill, "SkillCreate": create_skill,
+                 "bash": run_bash, "read_file": run_read}
 
 
 def authorize_loaded_skill_tool(
@@ -809,6 +898,7 @@ if __name__ == "__main__":
     print(f"\033[90m  load X  — 手动加载技能 X\033[0m")
     print(f"\033[90m  create  — 创建新技能\033[0m")
     print(f"\033[90m  audit   — 安全审计演示\033[0m")
+    print(f"\033[90m  approve X / reject X — 批准或拒绝待审批技能 X\033[0m")
     print(f"\033[90m  stats   — 查看统计\033[0m")
     print(f"\033[90m试试说 \"帮我提交代码\" — 会自动匹配 git-commit 技能\033[0m\n")
 
@@ -849,6 +939,13 @@ if __name__ == "__main__":
                 content="# Test Skill\n\n这是一个测试技能。"
             )
             print(f"\033[32m{result}\033[0m")
+            continue
+
+        if cmd.startswith(("approve ", "reject ")):
+            # 只有用户在终端输入的命令才能处理待审批项
+            action, name = query.strip().split(" ", 1)
+            handler = approve_skill if action.lower() == "approve" else reject_skill
+            print(handler(name.strip()))
             continue
 
         if cmd == "audit":
