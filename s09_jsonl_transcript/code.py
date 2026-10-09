@@ -166,6 +166,7 @@ class JSONLTranscript:
         self.session_id = self.path.stem
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._ignored_partial_tail = False
+        self._missing_final_newline = False
 
     def _event_id(self, sequence: int) -> str:
         """Build the stable cross-chapter source identifier for one record."""
@@ -185,6 +186,12 @@ class JSONLTranscript:
         if self._ignored_partial_tail:
             raise TranscriptCorruptionError(
                 f"{self.path.name}: cannot append after partial tail; "
+                "preserve this log and use a new transcript file"
+            )
+        # A complete last record without its newline would be glued to the new one.
+        if self._missing_final_newline:
+            raise TranscriptCorruptionError(
+                f"{self.path.name}: cannot append after unterminated last line; "
                 "preserve this log and use a new transcript file"
             )
         sequence = existing[-1]["sequence"] + 1 if existing else 1
@@ -210,10 +217,15 @@ class JSONLTranscript:
         """Read all events from the JSONL file."""
         # The flag describes this read, not an earlier observation of the path.
         self._ignored_partial_tail = False
+        self._missing_final_newline = False
         if not self.path.exists():
             return []
         events: list[dict] = []
-        lines = self.path.read_text(encoding="utf-8").splitlines(keepends=True)
+        raw = self.path.read_bytes()
+        # Judge the final newline on raw bytes; decoded lines may end in "\r" or U+2028.
+        self._missing_final_newline = bool(raw) and not raw.endswith(b"\n")
+        text = raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")  # same as read_text()
+        lines = text.splitlines(keepends=True)
         for line_number, line in enumerate(lines, start=1):
             if not line.strip():
                 continue
