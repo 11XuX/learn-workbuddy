@@ -432,18 +432,26 @@ def _clean_text(value: object, *, field_name: str, max_chars: int) -> str:
     return text
 
 
-def _record_id(value: object, *, field_name: str) -> str:
+def _record_id(value: object, *, field_name: str, generate: bool = True) -> str:
     """写入端统一的记录 ID 校验：None 或空串自动生成，其余必须是字符串且原样保存。
 
     不做空白归一化，也不做 str() 隐式转换：整数 123 若被写成 "123"，就会和已有的
     字符串 ID 撞在一起，或者让调用方拿到的 ID 与落盘的 ID 不一致。
+    generate=False 时（撤回目标）None 和空串都直接拒绝。
     """
 
-    if value is None or value == "":
+    if value is None and generate:
         return uuid.uuid4().hex
+    # 先校验类型，再做任何比较：非法对象的 __eq__ 不会被调用
     if not isinstance(value, str):
         raise RemoteMemoryValidationError(f"{field_name} must be a string")
-    return value
+    # 字符串子类固化成内建 str，判空、查重、匹配都只看文本，不受子类的 __eq__/__hash__/__bool__ 影响
+    text = str.__str__(value)
+    if len(text) == 0:
+        if not generate:
+            raise RemoteMemoryValidationError(f"{field_name} must be a non-empty string")
+        return uuid.uuid4().hex
+    return text
 
 
 def _validate_source(source: MemorySource) -> MemorySource:
@@ -775,9 +783,7 @@ class RemoteMemoryStore:
 
         # 目标按原始 memory_id 精确匹配：append 存的就是原始 ID，这里不做空白归一化或
         # 长度限制，否则只差空白的两个 ID 会撤错，已存下的长 ID 也撤不掉。
-        if not isinstance(memory_id, str) or not memory_id:
-            raise RemoteMemoryValidationError("retract memory_id must be a non-empty string")
-        target_id = memory_id
+        target_id = _record_id(memory_id, field_name="retract memory_id", generate=False)
         clean_reason = _clean_text(
             reason, field_name="retraction reason", max_chars=2_000
         )
