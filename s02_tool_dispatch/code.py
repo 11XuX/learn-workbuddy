@@ -407,7 +407,7 @@ def run_edit(path: str, old_text: str, new_text: str) -> str:
 
 def run_glob(pattern: str) -> str:
     matches: set[str] = set()
-    for match in globmod.glob(str(WORKDIR / pattern), recursive=True):
+    for match in globmod.glob(os.path.join(globmod.escape(str(WORKDIR)), pattern), recursive=True):
         path = Path(match).resolve()
         if path.is_relative_to(WORKDIR):
             matches.add(str(path.relative_to(WORKDIR)))
