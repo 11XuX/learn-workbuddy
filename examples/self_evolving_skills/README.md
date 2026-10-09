@@ -16,6 +16,9 @@ flowchart LR
     H -->|No| Q["Keep candidate only"]
     H -->|Yes| V["Versioned skill library"]
     V --> A["Evolution audit"]
+    V --> S["set_active_version: approver + reason + byte check"]
+    S --> A
+    S --> P["active_skill_path"]
 ```
 
 ## 这个示例解决什么问题
@@ -41,6 +44,36 @@ s09 已经能保存完整执行轨迹，s10 能从追加式事实中蒸馏长期
 7. 即使评测通过，没有显式 `approved_by` 也不能进入正式 Skill 库。
 
 字符串扫描只是第一层教学防线，不等于沙盒。真实系统仍需要声明式权限、隔离试跑、网络出口控制和更强的 Skill 安全评测。
+
+## 版本切换与回滚
+
+发布 v2 后发现问题，不需要手改 `manifest.json`。回滚和发布一样，是一次需要显式审批人和原因的发布决策：
+
+```python
+store.set_active_version(
+    "python-test-validation",
+    1,
+    approved_by="alice",
+    reason="v2 在新仓库上复现失败，先退回 v1",
+)
+store.active_skill_path("python-test-validation")  # -> skills/python-test-validation/v1/SKILL.md
+```
+
+| 规则 | 说明 |
+|---|---|
+| 只切指针 | 只改 `active_version`，不新建、不改写、不删除任何 `v<N>/SKILL.md`，`history` 保持不变 |
+| 同样需要审批 | `approved_by` 和 `reason` 必填，为空直接拒绝，manifest 和审计都不变 |
+| 审计为准 | 每次切换写一条 `skill_activated` 审计事件（from、to、审批人、原因）；manifest 只表示当前状态 |
+| 激活前核对 | 按 `history` 里的 `candidate_id` 读回 `candidate.json`，重新渲染后与磁盘文件逐字节比较，正文或 frontmatter 被改过都不能生效 |
+| 证据缺失即拒绝 | `candidate.json` 缺失或损坏时拒绝激活，不降级成只查 frontmatter |
+| 路径可搬迁 | 路径一律由 store 根目录推导，不读 `history` 里记录的旧绝对路径 |
+| 幂等 | 切换到当前版本直接返回，不写 manifest，也不写审计 |
+
+`active_skill_path()` 对从未发布的 Skill 返回 `None`；如果生效指针不在 `history` 中、文件被删除或核对不通过，就直接抛 `EvolutionError`，不会返回一个不存在或被改过的路径。
+
+回滚到 v1 后再次批准 v2 的 candidate 只会返回 v2 路径，不会改变生效版本；要重新启用 v2，同样走 `set_active_version()`。
+
+逐字节核对证明的是“发布产物与候选证据一致”，不是密码学签名：如果 `candidate.json` 和 `SKILL.md` 被一起改成一致的样子，这一层核对防不住。和 `promote()` 一样，本示例也不处理多个进程并发写 manifest 的情况。
 
 ## 运行
 
@@ -79,7 +112,7 @@ python3 examples/self_evolving_skills/code.py \
 ├── skills/python-test-validation/
 │   ├── manifest.json               # active_version + 历史版本
 │   └── v1/SKILL.md                 # 人工批准后的正式版本
-├── evolution-audit.jsonl           # 形成、评测、晋升事件
+├── evolution-audit.jsonl           # 形成、评测、晋升、切换事件
 └── run_manifest.json               # 本轮演示清单
 ```
 
@@ -106,7 +139,7 @@ python3 examples/self_evolving_skills/code.py \
 ## 验证
 
 ```bash
-python3 -m pytest -q tests/test_self_evolving_skills.py
+python3 -m pytest -q tests/test_self_evolving_skills.py tests/test_self_evolving_skills_rollback.py
 ```
 
-测试覆盖候选态停止、失败轨迹隔离、held-out 评测、显式审批、版本幂等和敏感轨迹拒绝。
+测试覆盖候选态停止、失败轨迹隔离、held-out 评测、显式审批、版本幂等、敏感轨迹拒绝，以及回滚、前滚、篡改拒绝和 store 搬迁。

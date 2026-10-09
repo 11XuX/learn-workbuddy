@@ -70,6 +70,13 @@ def _validate_text(value: object, *, field_name: str, max_chars: int = 500) -> s
     return normalized
 
 
+def _canonical_title(value: object) -> str:
+    """标识符必须已是规范形式，不静默去空白或改大小写。"""
+    if not isinstance(value, str) or _validate_id(value, field_name="title") != value:
+        raise EvolutionError("title must be a canonical skill id")
+    return value
+
+
 def _atomic_write_text(path: Path, content: str) -> None:
     """Expose either the old file or the complete new file, never a partial one."""
 
@@ -362,6 +369,120 @@ class EvolutionStore:
             },
         )
         return release_path
+
+    def _load_candidate(self, candidate_id: str) -> SkillCandidate:
+        """读回 candidate.json 并还原 SkillCandidate；缺失、损坏或字段类型不对都拒绝。"""
+        path = self.candidate_dir(candidate_id) / "candidate.json"
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise EvolutionError(f"candidate evidence is unreadable: {candidate_id}") from exc
+        texts = ("candidate_id", "title", "summary", "created_at")
+        lists = ("read_when", "required_tools", "source_trace_ids", "source_digests")
+        steps = data.get("steps") if isinstance(data, dict) else None
+        if (
+            not isinstance(steps, list)
+            or set(data) != {*texts, *lists, "steps"}
+            or not all(isinstance(data[key], str) for key in texts)
+            or not all(isinstance(data[key], list) for key in lists)
+            or not all(isinstance(item, str) for key in lists for item in data[key])
+            or not all(
+                isinstance(step, dict) and set(step) == {"intent", "tool", "ok"}
+                and isinstance(step["intent"], str) and isinstance(step["tool"], str)
+                and type(step["ok"]) is bool
+                for step in steps
+            )
+            or data["candidate_id"] != candidate_id
+        ):
+            raise EvolutionError(f"candidate evidence is malformed: {candidate_id}")
+        # 列表字段转回 tuple，steps 转回 StepEvidence，保证与原 candidate 相等
+        return SkillCandidate(
+            **{key: data[key] for key in texts},
+            **{key: tuple(data[key]) for key in lists},
+            steps=tuple(StepEvidence(**step) for step in steps),
+        )
+
+    def _read_manifest(self, title: str) -> dict | None:
+        """读取 manifest；从未发布返回 None，其余读取或结构问题一律抛错。"""
+        path = self.skills_dir / title / "manifest.json"
+        try:
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise EvolutionError(f"manifest is unreadable: {title}") from exc
+        history = manifest.get("history") if isinstance(manifest, dict) else None
+        if not isinstance(history, list) or not all(isinstance(item, dict) for item in history):
+            raise EvolutionError(f"manifest is malformed: {title}")
+        return manifest
+
+    def _verify_release(self, title: str, version: int) -> Path:
+        """按候选证据重新渲染并逐字节核对已发布版本；路径由 skills_dir 推导。"""
+        manifest = self._read_manifest(title)
+        if manifest is None:
+            raise EvolutionError(f"skill has not been published: {title}")
+        releases = {
+            row["version"]: row for row in manifest["history"] if type(row.get("version")) is int
+        }
+        entry = releases.get(version)
+        if entry is None:
+            raise EvolutionError(f"version {version} is not in the release history of {title}")
+        candidate_id, approver = entry.get("candidate_id"), entry.get("approved_by")
+        if not isinstance(candidate_id, str) or not isinstance(approver, str):
+            raise EvolutionError(f"release history entry v{version} is malformed")
+        candidate = self._load_candidate(candidate_id)
+        if candidate.title != title:
+            raise EvolutionError(f"candidate {candidate_id} does not belong to {title}")
+        # 不信 history[*].path：store 根目录整体搬迁后旧绝对路径会失效
+        path = self.skills_dir / title / f"v{version}" / "SKILL.md"
+        expect = render_skill(candidate, status="approved", version=version, approved_by=approver)
+        try:
+            actual = path.read_bytes()
+        except OSError as exc:
+            raise EvolutionError(f"release file v{version} is missing or unreadable") from exc
+        if actual != expect.encode("utf-8"):
+            raise EvolutionError(f"release file v{version} does not match its candidate evidence")
+        return path
+
+    def set_active_version(
+        self, title: str, version: int, *, approved_by: str, reason: str
+    ) -> Path:
+        """只切换生效指针（回滚或前滚），不新建、不改写、不删除任何版本文件。"""
+        safe_title = _canonical_title(title)
+        if type(version) is not int or version < 1:
+            raise EvolutionError("version must be a positive integer")
+        if not isinstance(approved_by, str) or not isinstance(reason, str):
+            raise EvolutionError("approved_by and reason must be strings")
+        approver = _validate_text(approved_by, field_name="approved_by", max_chars=100)
+        if approver != approved_by:
+            raise EvolutionError("approved_by must not contain extra whitespace")
+        why = _validate_text(reason, field_name="reason")
+        path = self._verify_release(safe_title, version)
+        manifest = self._read_manifest(safe_title) or {}
+        previous = manifest.get("active_version")
+        if type(previous) is int and previous == version:
+            # 已经生效：幂等返回，不写 manifest，也不写审计
+            return path
+        manifest["active_version"] = version
+        _atomic_write_text(
+            self.skills_dir / safe_title / "manifest.json",
+            json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+        )
+        # 切换记录只写审计日志，以 evolution-audit.jsonl 为唯一依据
+        details = {"title": safe_title, "from_version": previous, "to_version": version}
+        self.append_audit("skill_activated", {**details, "approved_by": approver, "reason": why})
+        return path
+
+    def active_skill_path(self, title: str) -> Path | None:
+        """解析当前生效文件：从未发布返回 None，指针或文件有问题一律抛错。"""
+        safe_title = _canonical_title(title)
+        manifest = self._read_manifest(safe_title)
+        if manifest is None or manifest.get("active_version") is None:
+            return None
+        active = manifest["active_version"]
+        if type(active) is not int or active < 1:
+            raise EvolutionError(f"manifest active_version is invalid: {title}")
+        return self._verify_release(safe_title, active)
 
 
 class SkillEvolutionPipeline:
