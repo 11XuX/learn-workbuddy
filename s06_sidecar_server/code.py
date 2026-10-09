@@ -114,10 +114,9 @@ class RingBuffer:
                 return self.buffer[:self.write_pos].decode('utf-8', errors='replace')
             else:
                 # Buffer full — read from write_pos (oldest) around to write_pos (newest)
-                return (
-                    self.buffer[self.write_pos:].decode('utf-8', errors='replace') +
-                    self.buffer[:self.write_pos].decode('utf-8', errors='replace')
-                )
+                # 先按最旧到最新拼好字节再整体解码，避免回绕点切断多字节字符。
+                data = self.buffer[self.write_pos:] + self.buffer[:self.write_pos]
+                return data.decode('utf-8', errors='replace')
 
     @property
     def used(self) -> int:
