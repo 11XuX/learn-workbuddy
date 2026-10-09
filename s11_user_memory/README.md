@@ -91,7 +91,7 @@ flowchart LR
 | 文件 | 角色 | 是否作为真相来源 |
 |---|---|---|
 | `profile.json` | 结构化用户资料 | 是 |
-| `preferences.json` | 带 key、revision、expiry、source event 的完整偏好集合 | 是，包括已过期记录 |
+| `preferences.json` | 带 key、revision、expiry、source event 的完整偏好集合；含删除墓碑，不含被删内容 | 是，包括已过期记录 |
 | `persona/user.md` | 便于人阅读的 Profile 投影 | 否，可重建 |
 | `MEMORY.md` | 便于检查和注入 Prompt 的 Preference 投影 | 否，可重建 |
 | `persona/core.md` | 助手价值与边界 | 独立的 assistant identity |
@@ -176,6 +176,29 @@ memory.delete_preference("response.language")
 ```
 
 删除按 key 精确执行，不对自然语言做模糊匹配。Harness 因此可以向用户展示将删除的具体偏好，也能在审计日志中记录明确目标。
+
+删除不能直接把记录 pop 掉。`set_preference()` 靠已有记录的 `updated_at` 拒绝旧证据；记录一旦消失，同一条证据（相同 `source_event_id` 和 `updated_at`）重放一次，被删的偏好就会复活。所以删除会在 `preferences.json` 的独立数组 `deleted` 里留下墓碑：
+
+```text
+CREATED  set_preference(..., updated_at="2026-10-01T00:00:00Z", source_event_id="session-1:e1")
+DELETED  delete_preference("response.language")  -> deleted: [{key, deleted_at, revision, source}]
+STALE    同一条证据重放                            -> StalePreferenceUpdateError，偏好不复活
+```
+
+- 墓碑只记录删过哪个 key，不保存被删的内容：原值不会留在 `preferences.json`、`MEMORY.md` 和 `get_context_for_agent()` 里。s09 transcript 里用户的原话不在本章范围内。
+- 晚于 `deleted_at` 的证据可以重建偏好，revision 接着墓碑继续增长，墓碑同时清除；早于或等于 `deleted_at` 的证据抛 `StalePreferenceUpdateError`。
+- 重复删除返回 `UNCHANGED`，保留第一次的 `deleted_at`。显式传入的 `deleted_at` 不晚于活记录的 `updated_at` 时报错且不写盘：旧的删除意图不能抹掉更新的确认。
+- 每条写路径（包括 `append_memory()`）都会把墓碑原样写回。`list_preferences()` 和 `MEMORY.md` 不变，审计用只读的 `list_deleted_preferences()`。
+- 模型通过 `forget_user_preference` 工具遗忘，schema 只有必填的 `key`；`source` 固定为 `model_tool`，删除时间由 Harness 决定。
+
+这里没有沿用过期模式：过期记录的原值是要保留的审计证据，遗忘则是用户要求拿掉内容，所以墓碑和活记录分开存放。
+
+#### 遗忘的边界
+
+- 遗忘不是永久封禁：被删的偏好可以用更新的证据恢复。判定只看时间戳，不带 `updated_at` 的重放（包括 `append_memory()` 重放同一段旧文本）会按当前时间写入并重建偏好，因此重放旧 transcript 时必须保留原始证据时间，这和第 2 节的约定一致。
+- 真正的 Harness 应该先把要删的 key 展示给用户确认，再执行删除。
+- 本章不防提示注入：`bash` 输出和工作区文件里的文字可能诱导模型调用遗忘。系统提示和工具描述里「只在用户明确要求时调用」是约定，不是防护。
+- 常见的助手记忆功能也允许用户要求忘掉某条记忆；本章只借这个概念。
 
 ### 5. 多用户隔离
 
@@ -262,12 +285,13 @@ Profile 同样以 `profile.json` 为准。`load_identity()` 不仅检查 `person
 - 两个用户共享 root 时仍然隔离；
 - 错误复制的跨 scope JSON 被拒绝；
 - Prompt context 不包含 workspace state；
-- `MEMORY.md` 可从 canonical preferences 修复。
+- `MEMORY.md` 可从 canonical preferences 修复；
+- 删除墓碑防复活、遗忘后不留原值和 `forget_user_preference` 工具。
 
 运行：
 
 ```bash
-python3 -m pytest -q tests/test_user_memory.py
+python3 -m pytest -q tests/test_user_memory.py tests/test_s11_preference_forget.py
 python3 scripts/verify.py
 ```
 
