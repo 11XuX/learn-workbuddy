@@ -325,16 +325,20 @@ def _is_recursive_force_rm(command: str) -> bool:
         tokens = [token.lower() for token in lexer]  # 与 shell 一样去掉引号和反斜杠
     except ValueError:  # 引号不配对：bash 本身也不会执行这种命令，保守地按硬拒绝处理
         return re.search(r"\brm\b", command, re.IGNORECASE) is not None
-    in_rm = recursive = force = False
+    in_rm = options_done = recursive = force = False
     for token in tokens + [";"]:
         if token and set(token) <= set(_SHELL_SEPARATORS):
             if recursive and force:
                 return True
-            in_rm = recursive = force = False
+            in_rm = options_done = recursive = force = False
+        elif options_done:  # 同一条命令里 `--` 之后都是文件名，名为 rm 的文件也不会重新开始解析
+            continue
         elif token == "rm" or token.endswith("/rm"):
             in_rm = True
-        elif not in_rm or token == "--":  # `--` 之后都是文件名
-            in_rm = False
+        elif not in_rm:
+            continue
+        elif token == "--":
+            options_done = True
         elif token.startswith("--"):  # GNU 长选项接受唯一前缀，如 --rec、--forc
             recursive = recursive or (len(token) >= 3 and "--recursive".startswith(token))
             force = force or (len(token) >= 3 and "--force".startswith(token))
