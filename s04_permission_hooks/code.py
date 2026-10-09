@@ -23,6 +23,7 @@ import glob as globmod
 import json
 import os
 import re
+import shlex
 import subprocess
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -310,9 +311,44 @@ def _command(request: ToolRequest) -> str:
     return raw if isinstance(raw, str) else ""
 
 
+_SHELL_SEPARATORS = ";&|()\n"
+
+
+def _is_recursive_force_rm(command: str) -> bool:
+    """按 rm 的全部选项判断是否「递归 + 强制」；选项只算到同一条命令的分隔符为止。
+
+    这是字符串级预检，宁可多拒：`echo rm -r -f` 也会命中，和旧正则对 `echo rm -rf` 的处理一致。
+    """
+    lexer = shlex.shlex(command.replace("\\\n", ""), posix=True, punctuation_chars=_SHELL_SEPARATORS)
+    lexer.whitespace, lexer.whitespace_split, lexer.commenters = " \t\r", True, ""
+    try:
+        tokens = [token.lower() for token in lexer]  # 与 shell 一样去掉引号和反斜杠
+    except ValueError:  # 引号不配对：bash 本身也不会执行这种命令，保守地按硬拒绝处理
+        return re.search(r"\brm\b", command, re.IGNORECASE) is not None
+    in_rm = recursive = force = False
+    for token in tokens + [";"]:
+        if token and set(token) <= set(_SHELL_SEPARATORS):
+            if recursive and force:
+                return True
+            in_rm = recursive = force = False
+        elif token == "rm" or token.endswith("/rm"):
+            in_rm = True
+        elif not in_rm or token == "--":  # `--` 之后都是文件名
+            in_rm = False
+        elif token.startswith("--"):  # GNU 长选项接受唯一前缀，如 --rec、--forc
+            recursive = recursive or (len(token) >= 3 and "--recursive".startswith(token))
+            force = force or (len(token) >= 3 and "--force".startswith(token))
+        elif token.startswith("-"):
+            recursive = recursive or "r" in token
+            force = force or "f" in token
+    return False
+
+
 def _bash_is_hard_denied(request: ToolRequest) -> bool:
     command = _command(request)
-    return request.name == "bash" and any(pattern.search(command) for pattern in HARD_DENY_PATTERNS)
+    return request.name == "bash" and (
+        _is_recursive_force_rm(command) or any(pattern.search(command) for pattern in HARD_DENY_PATTERNS)
+    )
 
 
 def _permission_input_error(request: ToolRequest, scope: WorkspaceScope) -> str | None:
