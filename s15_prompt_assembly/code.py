@@ -1385,8 +1385,18 @@ def run_read(path: str) -> str:
 
 def run_glob(pattern: str) -> str:
     import glob as g
+    def inside_workdir(match: str) -> bool:
+        try:
+            try:
+                resolved = Path(match).resolve(strict=True)
+            except FileNotFoundError:  # 悬空链接：和原来一样按非严格方式解析
+                resolved = Path(match).resolve()
+            return resolved.is_relative_to(WORKDIR)
+        except (RuntimeError, OSError):  # 符号链接环等无法解析的单项直接跳过
+            return False
+
     matches = g.glob(os.path.join(g.escape(str(WORKDIR)), pattern))
-    results = sorted(r for r in matches if Path(r).resolve().is_relative_to(WORKDIR))[:20]
+    results = sorted(r for r in matches if inside_workdir(r))[:20]
     return "\n".join(Path(r).name for r in results) if results else "(no matches)"
 
 
