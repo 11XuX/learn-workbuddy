@@ -251,9 +251,9 @@ def recover(self):
 
 ### 损坏处理为什么只放过 partial tail
 
-最后一行没有换行且 JSON 不完整，通常表示进程在一次 append 中途退出，可以忽略并报告 `ignored_partial_tail=True`。但中间坏行、完整坏行或 sequence 跳号都意味着证据链不再可信，reader 会抛出 `TranscriptCorruptionError`，而不是悄悄继续。
+最后一行没有换行且 JSON 不完整，通常表示进程在一次 append 中途退出，可以忽略并报告 `ignored_partial_tail=True`。JSON 完整但缺 `\n` 的末行不是 partial tail：它照常计入回放，`ignored_partial_tail` 仍为 `False`，但也不能继续追加。但中间坏行、完整坏行或 sequence 跳号都意味着证据链不再可信，reader 会抛出 `TranscriptCorruptionError`，而不是悄悄继续。
 
-只读恢复不代表可以继续向原文件追加。`append()` 会先重新读取日志；若发现上述 partial tail，在打开追加写入之前抛出 `TranscriptCorruptionError`，原文件字节保持不变。否则新 JSON 会直接接在残缺内容后面，将原本可忽略的尾部变成完整坏行，使后续回放失败。调用方应保留旧日志，改用新的 transcript 文件；本例不会自动截断、补换行、复制历史或迁移会话。
+只读恢复不代表可以继续向原文件追加。`append()` 会先重新读取日志；若发现上述 partial tail，或文件非空且最后一个字节不是 `\n`（按原始字节判断；末尾是 `\r` 或只剩空白也算），在打开追加写入之前抛出 `TranscriptCorruptionError`，原文件字节保持不变。否则新 JSON 会直接接在残缺内容或上一条记录后面，将原本可忽略的尾部变成完整坏行，使后续回放失败。调用方应保留旧日志，改用新的 transcript 文件；本例不会自动截断、补换行、复制历史或迁移会话。
 
 这一检查针对当前读取结果，文件不存在时会清除之前观察到的 partial-tail 标志；它不提供多写入者互斥，也无法保证检查完成后文件不会被其他进程修改。正常完整日志仍按原序号追加。
 
