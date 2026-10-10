@@ -585,6 +585,8 @@ class PendingItem:
     status: str = "open"
 
     def __post_init__(self) -> None:
+        if type(self.status) is not str and type(self.status) is not PendingStatus:
+            raise ValueError("status must be a plain str or PendingStatus")
         object.__setattr__(self, "status", PendingStatus(self.status).value)
         object.__setattr__(self, "item_id", _required_text(self.item_id, field_name="item_id"))
         object.__setattr__(
@@ -762,6 +764,11 @@ def transition_pending_item(
     current, target = PendingStatus(item.status), PendingStatus(new_status)
     if target not in _PENDING_TRANSITIONS[current]:
         raise ValueError(f"illegal pending transition: {current.value} -> {target.value}")
+    def _instant(value: str) -> datetime:
+        return datetime.fromisoformat(_confirmed_at(value).replace("Z", "+00:00"))
+
+    if _instant(last_confirmed_at) <= _instant(item.last_confirmed_at):
+        raise ValueError("last_confirmed_at must be later than the current confirmation")
     pointer = item.source_pointer
     if target is not PendingStatus.OPEN:
         pointer = _required_text(source_pointer or "", field_name="source_pointer")
