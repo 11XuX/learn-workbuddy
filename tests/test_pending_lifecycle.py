@@ -136,3 +136,36 @@ def test_repl_pending_demo_prints_four_locked_lines() -> None:
     ]
     start = next(i for i, line in enumerate(lines) if line.startswith("[before]"))
     assert lines[start:start + 4] == expected
+
+
+class _EvilId(str):
+    def __eq__(self, other):
+        return True
+
+    __hash__ = str.__hash__
+
+    def __bool__(self):
+        return False
+
+
+def test_transition_rejects_non_plain_inputs(s14) -> None:
+    state = _state(s14, _open(s14))
+    ok = {"last_confirmed_at": T1, "source_pointer": "transcript:demo:5"}
+    # str 子类 id 在入口被拒（ValueError），绝不会匹配任何条目
+    for bad_id in (_EvilId("nope"), _EvilId("ship-docs"), 1, None):
+        with pytest.raises(ValueError):
+            s14.transition_pending_item(state, bad_id, "done", **ok)
+    for bad_status in (1, _EvilId("done"), None):
+        with pytest.raises(ValueError):
+            s14.transition_pending_item(state, "ship-docs", bad_status, **ok)
+    with pytest.raises(ValueError):
+        s14.transition_pending_item(state, "ship-docs", "blocked", reason=123, **ok)
+    assert state.pending_items[0].status == "open"
+
+
+def test_plain_normalized_id_and_enum_status_still_match(s14) -> None:
+    state = _state(s14, _open(s14))
+    after = s14.transition_pending_item(state, "  ship-docs ", s14.PendingStatus.BLOCKED,
+                                        last_confirmed_at=T1, source_pointer="transcript:demo:5",
+                                        reason="等待")
+    assert (after.pending_items[0].status, after.pending_items[0].reason) == ("blocked", "等待")

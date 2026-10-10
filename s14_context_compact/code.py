@@ -747,9 +747,17 @@ def transition_pending_item(
 ) -> DurableContextState:
     """Harness-owned lifecycle change; returns a new frozen state."""
 
-    matches = [item for item in state.pending_items if item.item_id == item_id]
+    # 入口严格校验：拒绝 str 子类/非 str，防止自定义 __eq__ 冒充匹配
+    if type(item_id) is not str:
+        raise ValueError("item_id must be a plain str")
+    if type(new_status) is not str and type(new_status) is not PendingStatus:
+        raise ValueError("new_status must be a plain str or PendingStatus")
+    if reason is not None and type(reason) is not str:
+        raise ValueError("reason must be a plain str or None")
+    key = _required_text(item_id, field_name="item_id")
+    matches = [item for item in state.pending_items if item.item_id == key]
     if not matches:
-        raise KeyError(f"unknown pending item: {item_id}")
+        raise KeyError(f"unknown pending item: {key}")
     item = matches[0]
     current, target = PendingStatus(item.status), PendingStatus(new_status)
     if target not in _PENDING_TRANSITIONS[current]:
