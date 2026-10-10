@@ -94,6 +94,13 @@ _FULL_SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
 _ARTIFACT_FILENAME_PATTERN = re.compile(r"^tool_result_[0-9]{3,}\.txt$")
 
 
+def _split_jsonl(raw: bytes) -> list[str]:
+    # 按 read_text() 规范化换行后只按 "\n" 切分；不用 splitlines()，以免 U+2028 等被当成行界
+    text = raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    parts = text.split("\n")
+    return [p + "\n" for p in parts[:-1]] + ([parts[-1]] if parts[-1] else [])
+
+
 class ArtifactAccessError(ValueError):
     """An artifact read escaped the externalizer-owned tool-results directory."""
 
@@ -784,7 +791,7 @@ class ArtifactRetentionJournal:
             encoded = self.path.read_bytes()
             durable_end = encoded.rfind(b"\n") + 1
             durable = encoded[:durable_end]
-            lines = durable.decode("utf-8").splitlines(keepends=True)
+            lines = _split_jsonl(durable)
         except UnicodeDecodeError as exc:
             raise ArtifactLeaseJournalError(
                 "retention journal is not valid UTF-8"

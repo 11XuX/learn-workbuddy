@@ -99,6 +99,13 @@ MODEL = os.environ.get("MODEL_ID")
 client: Anthropic | None = None
 
 
+def _split_jsonl(raw: bytes) -> list[str]:
+    # 按 read_text() 规范化换行后只按 "\n" 切分；不用 splitlines()，以免 U+2028 等被当成行界
+    text = raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    parts = text.split("\n")
+    return [p + "\n" for p in parts[:-1]] + ([parts[-1]] if parts[-1] else [])
+
+
 def runtime_client() -> tuple[Anthropic, str]:
     """Create the provider client only when the online loop actually needs it.
 
@@ -698,9 +705,7 @@ class RemoteMemoryStore:
         if not self.path.exists():
             return []
         records: list[StoredMemory] = []
-        for line_number, line in enumerate(
-            self.path.read_text(encoding="utf-8").splitlines(), start=1
-        ):
+        for line_number, line in enumerate(_split_jsonl(self.path.read_bytes()), start=1):
             if not line.strip():
                 continue
             try:

@@ -85,6 +85,13 @@ RESERVED_ENVELOPE_FIELDS = frozenset(
 )
 
 
+def _split_jsonl(raw: bytes) -> list[str]:
+    # 按 read_text() 规范化换行后只按 "\n" 切分；不用 splitlines()，以免 U+2028 等被当成行界
+    text = raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    parts = text.split("\n")
+    return [p + "\n" for p in parts[:-1]] + ([parts[-1]] if parts[-1] else [])
+
+
 class TranscriptCorruptionError(RuntimeError):
     """A complete persisted record is malformed or out of sequence."""
 
@@ -224,8 +231,7 @@ class JSONLTranscript:
         raw = self.path.read_bytes()
         # Judge the final newline on raw bytes; decoded lines may end in "\r" or U+2028.
         self._missing_final_newline = bool(raw) and not raw.endswith(b"\n")
-        text = raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")  # same as read_text()
-        lines = text.splitlines(keepends=True)
+        lines = _split_jsonl(raw)
         for line_number, line in enumerate(lines, start=1):
             if not line.strip():
                 continue
