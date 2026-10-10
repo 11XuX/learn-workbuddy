@@ -131,7 +131,7 @@ def append_audit_entry(action: str, params: dict, result: str):
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
-    entries_count = len(path.read_text(encoding="utf-8").strip().splitlines())
+    entries_count = sum(1 for line in path.read_text(encoding="utf-8").split("\n") if line.strip())
     audit_head_path().write_text(
         json.dumps({"count": entries_count, "head": entry["hash"]}, sort_keys=True),
         encoding="utf-8",

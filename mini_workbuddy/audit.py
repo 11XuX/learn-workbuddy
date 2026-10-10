@@ -316,7 +316,8 @@ class AuditLog:
                 pass
 
     def _read_lines_unlocked(self) -> Iterable[str]:
-        return self._read_text_file(self.path).splitlines()
+        text = self._read_text_file(self.path).replace("\r\n", "\n").replace("\r", "\n")
+        return text.split("\n")
 
     @staticmethod
     def _read_text_file(path: Path) -> str:

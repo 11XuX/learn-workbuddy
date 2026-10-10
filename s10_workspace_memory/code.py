@@ -98,6 +98,13 @@ WORKDIR = Path.cwd()
 _DIRECTORY_FSYNC_SUPPORTED = os.name != "nt"
 
 
+def _split_jsonl(raw: bytes) -> list[str]:
+    # 按 read_text() 规范化换行后只按 "\n" 切分；不用 splitlines()，以免 U+2028 等被当成行界
+    text = raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    parts = text.split("\n")
+    return [p + "\n" for p in parts[:-1]] + ([parts[-1]] if parts[-1] else [])
+
+
 def _fsync_directory(path: Path) -> None:
     """Persist a renamed directory entry where directory handles are supported.
 
@@ -1027,7 +1034,7 @@ class WorkspaceMemory:
         if not path.exists():
             return []
 
-        lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+        lines = _split_jsonl(path.read_bytes())
         facts: list[MemoryFact] = []
         for index, line in enumerate(lines, start=1):
             if not line.strip():
@@ -1182,9 +1189,7 @@ class WorkspaceMemory:
     def _read_adjudications(self) -> list[ConflictAdjudication]:
         if not self.adjudication_file.exists():
             return []
-        lines = self.adjudication_file.read_text(encoding="utf-8").splitlines(
-            keepends=True
-        )
+        lines = _split_jsonl(self.adjudication_file.read_bytes())
         events: list[ConflictAdjudication] = []
         for index, line in enumerate(lines, start=1):
             if not line.endswith("\n") and index == len(lines):
@@ -1308,9 +1313,7 @@ class WorkspaceMemory:
     ) -> list[tuple[ConflictResolutionTransaction, tuple[str, ...]]]:
         if not self.resolution_transaction_file.exists():
             return []
-        lines = self.resolution_transaction_file.read_text(
-            encoding="utf-8"
-        ).splitlines(keepends=True)
+        lines = _split_jsonl(self.resolution_transaction_file.read_bytes())
         states: dict[str, dict[str, object]] = {}
         for index, line in enumerate(lines, start=1):
             if not line.endswith("\n") and index == len(lines):

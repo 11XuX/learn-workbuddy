@@ -262,7 +262,7 @@ class Transcript:
     def append(self, event: dict) -> None:
         sequence = 1
         if self.path.exists():
-            sequence += sum(1 for line in self.path.read_text().splitlines() if line)
+            sequence += sum(1 for line in self.path.read_text().split("\n") if line)
         record = {"schema_version": 1, "sequence": sequence,
                   "recorded_at": datetime.now(timezone.utc).isoformat(), **event}
         encoded = (json.dumps(record, ensure_ascii=False) + "\n").encode()
@@ -279,7 +279,7 @@ class Transcript:
         if not self.path.exists():
             return []
         records = []
-        for line_number, line in enumerate(self.path.read_text().splitlines(), start=1):
+        for line_number, line in enumerate(self.path.read_text().split("\n"), start=1):
             if not line.strip():
                 continue
             try:
@@ -332,7 +332,7 @@ class Memory:
         if not self.workspace_log.exists():
             return ""
         facts = []
-        for line in self.workspace_log.read_text().splitlines()[-6:]:
+        for line in self.workspace_log.read_text().rstrip("\n").split("\n")[-6:]:
             try:
                 payload = json.loads(line)
             except json.JSONDecodeError:
