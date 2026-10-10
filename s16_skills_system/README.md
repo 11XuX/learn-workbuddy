@@ -282,7 +282,7 @@ def skill_tool(skill: str) -> str:
 
 ### 技能创建
 
-模型完成任务后，可以把流程保存为新技能：
+模型完成任务后，可以调用 `SkillCreate` 工具提议把流程保存为新技能；harness 先审计，再决定是否写入：
 
 ```python
 def create_skill(title: str, summary: str, content: str) -> str:
@@ -303,6 +303,13 @@ agent_created: true
 
 {content}
 """
+    # 写入前先审计：P0 拒绝，P1 进待审批，只有 P2 直接写入
+    level, report = audit_skill(skill_md)
+    if level == "P0":
+        return f"拒绝创建技能 '{title}': {report}"
+    if level == "P1":
+        pending_skills[title] = PendingSkill(title, skill_md, report, time.time())
+        return f"技能 '{title}' 待用户审批: {report}"
     (skill_dir / "SKILL.md").write_text(skill_md)
 
     # 加入索引
@@ -590,7 +597,18 @@ const SkillTool = {
 
 ### 自动保存技能
 
-WorkBuddy 的一个设计原则：**完成多步骤任务后，模型必须保存流程为技能**。这让 agent 随着使用越来越强——下次遇到类似任务直接加载技能，不用重新探索。
+WorkBuddy 的一个设计原则：**完成多步骤任务后，把流程沉淀为技能**。本章里模型通过 `SkillCreate` 提议保存，写入前一定经过审计。这让 agent 随着使用越来越强——下次遇到类似任务直接加载技能，不用重新探索。
+
+### 写入边界的审计与待审批
+
+`SkillCreate` 让模型可以提议写入，但决定权不在模型手里：
+
+1. title、summary 和 read_when 的每一项都必须是单行文本、不含 `---`，值用 JSON 引号写进 frontmatter。拼好的 SKILL.md 只解析一次，审计、待审批和入索引共用解析出的同一个权限对象；解析结果和请求不一致就拒绝。
+2. `audit_skill()` 判为 P0 就拒绝；P1（网络/安装命令，或申请网络、写路径权限）放进内存里的 `pending_skills`，返回「待用户审批」；P2 直接进索引。
+3. 工具 schema 里没有审批字段，只有用户在终端输入 `approve <title>` / `reject <title>` 才能处理待审批项。approve 会重新审计，只有变成 P0 才拒绝；如果这期间已有同名技能进了索引，也会拒绝并清掉待审批项。同名技能再次提交返回「已在待审批」，不覆盖。
+4. `SkillCreate` 和其他工具一样经过 `authorize_loaded_skill_tool()`：没有加载技能时走基础策略；加载技能后，至少一个已加载技能的 manifest 声明了 `SkillCreate` 才允许（教学版对已加载技能取并集）。技能权限只会收窄、不会放宽，想在技能流程里保存新技能，就要在 manifest 里显式声明 `SkillCreate`。
+
+这是单进程、内存态的简化：进程退出后待审批项随之消失。真实 harness 会把待审批项持久化，并通过 UI 让用户确认。
 
 ---
 
