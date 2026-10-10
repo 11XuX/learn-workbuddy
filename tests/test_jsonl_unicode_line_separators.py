@@ -25,11 +25,18 @@ Sites under test (Critic may split):
 4. s23_audit_sandbox — append_audit_entry / verify_chain
 5. s24_comprehensive — Transcript.read / Memory.get_workspace
 6. mini_workbuddy/audit.py — AuditLog.verify / subsequent append
+7. s13_output_externalization — ArtifactRetentionJournal (decodes bytes, then
+   str.splitlines(keepends=True)); all writer-side fields are ASCII-validated,
+   so the repro is a hash-valid record carrying an extra top-level field.
+
+Round-1 additions: s09 boundary with #11 (U+2028 record + partial tail must
+still refuse append), and an s23 control proving legacy head counts unchanged.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import sys
 from datetime import datetime, timezone
@@ -52,7 +59,7 @@ def _load(name: str, relative: str, monkeypatch: pytest.MonkeyPatch, tmp_path: P
     """Import a chapter module with an isolated WORKBUDDY_HOME / MODEL_ID."""
     monkeypatch.setenv("WORKBUDDY_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("MODEL_ID", "offline-test-model")
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-offline-test")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "offline-test-key")
     # Avoid chapter_demo treating pytest args as --demo.
     monkeypatch.setattr(sys, "argv", [relative])
     stub = ROOT / "tests" / "stubs"
@@ -254,3 +261,104 @@ def test_mini_audit_verify_and_append_survive_line_separator(
     # A healthy chain must still accept a further append.
     audit.append("act2", {"payload": "ok"})
     assert audit.verify() is True
+
+
+# ---------------------------------------------------------------------------
+# 7. s13 retention journal
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def s13(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    name = "hunt_u2028_s13"
+    module = _load(name, "s13_output_externalization/code.py", monkeypatch, tmp_path)
+    yield module
+    sys.modules.pop(name, None)
+
+
+@pytest.mark.parametrize("breaker", LINE_BREAKERS)
+def test_s13_retention_journal_reads_hash_valid_record_with_line_separator(
+    s13, tmp_path: Path, breaker: str
+) -> None:
+    """Bug repro: reader decodes then splitlines(); a valid record is rejected.
+
+    The journal reader accepts extra top-level fields as long as event_sha256
+    covers them, and the writer serializes with ensure_ascii=False. A
+    hash-valid record whose extra field holds a line separator must replay.
+    """
+    session_dir = tmp_path / "sess-u2028"
+    artifact = s13.ToolResultExternalizer(session_dir).externalize(
+        "durable evidence", "search", summary="Evidence for the journal."
+    ).artifact
+    claim = s13.ArtifactRetentionClaim.from_memory_reference(artifact.for_memory())
+    journal = s13.ArtifactRetentionJournal(session_dir)
+    journal.prepare(claim, transaction_id="tx-u2028")
+    raw = journal.path.read_bytes()
+    assert raw.count(b"\n") == 1
+
+    payload = json.loads(raw)
+    payload.pop("event_sha256")
+    payload["operator_note"] = f"kept{breaker}verbatim"
+    payload["event_sha256"] = s13._canonical_sha256(payload)
+    journal.path.write_bytes(
+        (
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+            + "\n"
+        ).encode("utf-8")
+    )
+
+    recovery = s13.ArtifactRetentionJournal(session_dir).recover()
+    assert recovery.pending_transaction_ids == ("tx-u2028",)
+    assert [c.source_id for c in recovery.claims] == [claim.source_id]
+
+
+# ---------------------------------------------------------------------------
+# 8. s09 boundary with #11: separator record + partial tail still refuses
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("breaker", LINE_BREAKERS)
+def test_s09_separator_record_then_partial_tail_still_refuses_append(
+    s09, tmp_path: Path, breaker: str
+) -> None:
+    """After switching to b"\\n" splitting, the partial-tail rule must hold."""
+    path = tmp_path / "session.jsonl"
+    content = f"hello{breaker}world"
+    s09.JSONLTranscript(path).append(
+        {"type": "message", "role": "user", "content": content}
+    )
+    with path.open("ab") as handle:
+        handle.write(b'{"type": "message", "role": "assis')
+    before = path.read_bytes()
+
+    state = s09.JSONLTranscript(path).replay_state()
+    assert state.total_events == 1
+    assert state.messages == [{"role": "user", "content": content}]
+    assert state.ignored_partial_tail is True
+
+    with pytest.raises(s09.TranscriptCorruptionError, match="partial tail"):
+        s09.JSONLTranscript(path).append(
+            {"type": "message", "role": "assistant", "content": "new"}
+        )
+    assert path.read_bytes() == before
+
+
+# ---------------------------------------------------------------------------
+# 9. s23 control: legacy chains keep the same head count and verify
+# ---------------------------------------------------------------------------
+
+
+def test_s23_legacy_chain_head_count_unchanged_and_verifies(s23) -> None:
+    """Control (passes on main): chains without the three characters are unaffected.
+
+    The head count must equal the number of b"\\n"-terminated records, both
+    before and after the fix, so existing audit heads stay valid.
+    """
+    payloads = [{"cmd": "ls"}, {"cmd": "echo 你好"}, {"cmd": "tab\there"}]
+    for params in payloads:
+        s23.append_audit_entry("run", params, "ok")
+    raw = s23.audit_log_path().read_bytes()
+    assert raw.count(b"\n") == len(payloads)
+    head = json.loads(s23.audit_head_path().read_text(encoding="utf-8"))
+    assert head["count"] == len(payloads)
+    assert s23.verify_chain() == (True, len(payloads))
