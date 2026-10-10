@@ -23,7 +23,6 @@ import glob as globmod
 import json
 import os
 import re
-import shlex
 import subprocess
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -311,46 +310,94 @@ def _command(request: ToolRequest) -> str:
     return raw if isinstance(raw, str) else ""
 
 
-_SHELL_SEPARATORS = ";&|()\n"
-# <> 只参与切词，不参与命令分隔：紧贴的 rm</dev/null 才能拆出 rm，且重定向不重置选项累计。
-_SHELL_PUNCTUATION = _SHELL_SEPARATORS + "<>"
-_REDIRECT_OPERATORS = frozenset({"<", ">", ">>", ">&", "<&", "&>", "&>>", "<<", "<<<"})
+# 未引用的运算符按最长匹配切分；分隔符结束一条命令，重定向只消费紧随的一个目标词。
+_SEPARATOR_OPERATORS = frozenset({";", ";;", "&", "&&", "|", "||", "|&", "(", ")", "\n"})
+_REDIRECT_OPERATORS = frozenset({"<", ">", ">>", ">|", "<>", "<<", "<<<", ">&", "<&", "&>", "&>>"})
+_OPERATORS = sorted(_SEPARATOR_OPERATORS | _REDIRECT_OPERATORS, key=len, reverse=True)
 
 
-def _is_redirect_operator(token: str) -> bool:
-    """未引用的重定向运算符（可带前导 fd 数字）；目标由调用方跳过。"""
-    index = 0
-    while index < len(token) and token[index].isdigit():
-        index += 1
-    return index < len(token) and token[index:] in _REDIRECT_OPERATORS
+def _shell_tokens(command: str) -> list[tuple[bool, str]] | None:
+    """自写的小切词器，返回 (是否未引用运算符, 文本)；引号不配对返回 None。
+
+    处理单引号、双引号（其中反斜杠只转义 \\ " $ ` 和换行）、引号外的反斜杠转义，
+    以及未引用标点的最长匹配；引用或转义得到的 > < ; 等只是普通词，不是运算符。
+    不展开变量、$( )、反引号、here-doc 正文等，fd 前缀如 2> 中的 2 留作普通词。
+    """
+    tokens: list[tuple[bool, str]] = []
+    word: list[str] = []
+    has_word = False
+    i, n = 0, len(command)
+
+    def flush() -> None:
+        nonlocal has_word
+        if has_word:
+            tokens.append((False, "".join(word)))
+        word.clear()
+        has_word = False
+
+    while i < n:
+        ch = command[i]
+        if ch in " \t\r":
+            flush()
+            i += 1
+        elif ch == "\\":
+            if i + 1 < n and command[i + 1] != "\n":
+                word.append(command[i + 1])
+                has_word = True
+            i += 2  # 反斜杠换行是续行，直接删除
+        elif ch == "'":
+            close = command.find("'", i + 1)
+            if close < 0:
+                return None
+            word.append(command[i + 1 : close])
+            has_word, i = True, close + 1
+        elif ch == '"':
+            i += 1
+            while i < n and command[i] != '"':
+                if command[i] == "\\" and i + 1 < n and command[i + 1] in '\\"$`\n':
+                    if command[i + 1] != "\n":
+                        word.append(command[i + 1])
+                    i += 2
+                else:
+                    word.append(command[i])
+                    i += 1
+            if i >= n:
+                return None
+            has_word, i = True, i + 1
+        else:
+            op = next((o for o in _OPERATORS if command.startswith(o, i)), None)
+            if op is None:
+                word.append(ch)
+                has_word, i = True, i + 1
+            else:
+                flush()
+                tokens.append((True, op))
+                i += len(op)
+    flush()
+    return tokens
 
 
 def _is_recursive_force_rm(command: str) -> bool:
     """按 rm 的全部选项判断是否「递归 + 强制」；选项只算到同一条命令的分隔符为止。
 
     这是字符串级预检，宁可多拒：`echo rm -r -f` 也会命中，和旧正则对 `echo rm -rf` 的处理一致。
-    未引用的 < > 重定向会切出运算符并跳过目标，不打断同一条 rm 的选项累计。
+    未引用的重定向运算符消费紧随的一个目标词，不打断同一条 rm 的选项累计。
     """
-    lexer = shlex.shlex(command.replace("\\\n", ""), posix=True, punctuation_chars=_SHELL_PUNCTUATION)
-    lexer.whitespace, lexer.whitespace_split, lexer.commenters = " \t\r", True, ""
-    try:
-        tokens = [token.lower() for token in lexer]  # 与 shell 一样去掉引号和反斜杠
-    except ValueError:  # 引号不配对：bash 本身也不会执行这种命令，保守地按硬拒绝处理
+    tokens = _shell_tokens(command)
+    if tokens is None:  # 引号不配对：bash 本身也不会执行这种命令，保守地按硬拒绝处理
         return re.search(r"\brm\b", command, re.IGNORECASE) is not None
     in_rm = options_done = recursive = force = False
-    tokens = tokens + [";"]
+    tokens.append((True, ";"))
     index = 0
     while index < len(tokens):
-        token = tokens[index]
+        is_op, token = tokens[index]
+        token = token.lower()
         index += 1
-        if _is_redirect_operator(token):
-            # 跳过重定向目标，保留 in_rm / recursive / force / options_done
-            if index < len(tokens):
-                nxt = tokens[index]
-                if not (nxt and set(nxt) <= set(_SHELL_SEPARATORS)) and not _is_redirect_operator(nxt):
-                    index += 1
+        if is_op and token in _REDIRECT_OPERATORS:
+            if index < len(tokens) and not tokens[index][0]:
+                index += 1  # 跳过目标词，保留 in_rm / recursive / force / options_done
             continue
-        if token and set(token) <= set(_SHELL_SEPARATORS):
+        if is_op:
             if recursive and force:
                 return True
             in_rm = options_done = recursive = force = False
