@@ -99,6 +99,29 @@ memory.set_preference(
 memory.delete_preference("response.language")
 ```
 
+Deletion leaves a tombstone instead of popping the record. Without it, replaying the same evidence (same `source_event_id` and `updated_at`) would bring the forgotten preference back:
+
+```text
+CREATED  set_preference(..., updated_at="2026-10-01T00:00:00Z", source_event_id="session-1:e1")
+DELETED  delete_preference("response.language")  -> deleted: [{key, deleted_at, revision, source}]
+STALE    replay of the same evidence              -> StalePreferenceUpdateError, no resurrection
+```
+
+- The tombstone records only which key was deleted, never the deleted content: the old value is absent from `preferences.json`, `MEMORY.md`, and `get_context_for_agent()`. The user's original words in the s09 transcript are out of scope.
+- Evidence newer than `deleted_at` recreates the preference with the next revision and clears the tombstone; older or equal evidence raises `StalePreferenceUpdateError`.
+- Repeated deletion returns `UNCHANGED` and keeps the first `deleted_at`. An explicit `deleted_at` not later than the live `updated_at` raises and writes nothing.
+- Every write path, including `append_memory()`, writes tombstones back. `list_preferences()` and `MEMORY.md` are unchanged; `list_deleted_preferences()` is a read-only audit view.
+- The model forgets through `forget_user_preference`, whose schema has only the required `key`; the harness sets `source="model_tool"` and the time.
+
+Expiry keeps the old value as audit evidence; forgetting removes it, so tombstones live in a separate `deleted` array.
+
+#### Forgetting Boundaries
+
+- Forgetting is not a permanent ban: newer evidence can restore the preference. Only timestamps decide, so a replay without `updated_at` (including `append_memory()` replaying the same old text) is written at the current time and recreates it. Replays must keep the original evidence time.
+- A real harness should show the key to the user for confirmation before deleting.
+- This chapter does not defend against prompt injection: text in `bash` output or workspace files may lure the model into forgetting. The "only when the user explicitly asks" wording is a convention, not a defense.
+- Common assistant memory features also let users ask to forget a memory; this chapter borrows only that concept.
+
 ### User Scope
 
 ```python
@@ -143,7 +166,7 @@ validate -> serialize -> write temp file -> fsync -> os.replace
 ## Offline Verification
 
 ```bash
-python3 -m pytest -q tests/test_user_memory.py
+python3 -m pytest -q tests/test_user_memory.py tests/test_s11_preference_forget.py
 python3 scripts/verify.py
 ```
 
@@ -181,7 +204,7 @@ Use these exercises to change one part of user-scoped preferences, projections, 
 | File | Role | Source of truth? |
 |---|---|---|
 | `profile.json` | Structured user profile | Yes |
-| `preferences.json` | Complete keyed preference set with revision, expiry, and source event | Yes, including expired records |
+| `preferences.json` | Complete keyed preference set with revision, expiry, and source event; includes deletion tombstones, never deleted content | Yes, including expired records |
 | `persona/user.md` | Human-readable profile projection | No; rebuildable |
 | `MEMORY.md` | Preference projection for inspection and prompt injection | No; rebuildable |
 | `persona/core.md` | Assistant values and boundaries | Independent assistant identity |
