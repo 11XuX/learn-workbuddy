@@ -539,10 +539,10 @@ def build_created_skill_md(title, summary, read_when, content, permissions=None)
         raise SkillPermissionError("read_when 必须是字符串列表")
     for name, value in [("title", title), ("summary", summary)] + [
             ("read_when", item) for item in read_when]:
-        # 防止 frontmatter 注入：必须是单行文本，且不能出现 YAML 分隔符
+        # 防 frontmatter 注入与终端控制字符（C0/DEL/C1）伪造审批界面；报错用 repr 安全回显
         if not isinstance(value, str) or not value.strip() or value != value.strip() \
-                or "---" in value or "\n" in value or "\r" in value:
-            raise SkillPermissionError(f"{name} 必须是非空单行文本，首尾无空白，且不能包含 '---'")
+                or "---" in value or any(ord(ch) < 32 or 127 <= ord(ch) < 160 for ch in value):
+            raise SkillPermissionError(f"{name} 必须是非空单行文本，首尾无空白，不含控制字符和 '---'：{value!r}")
     if not isinstance(content, str):
         raise SkillPermissionError("content 必须是字符串")
     requested = parse_skill_permissions(permissions)
@@ -783,6 +783,7 @@ TOOLS = [
                     "{tools: [...], network: bool, paths: {read: [...], write: [...]}}"},
             },
             "required": ["title", "summary", "read_when", "content"],
+            "additionalProperties": False,
         },
     },
     {
@@ -838,6 +839,14 @@ def authorize_loaded_skill_tool(
 # Agent Loop
 # ======================================================================
 
+def invalid_tool_args(name, tool_input):
+    """按 input_schema 拒绝未知/缺失字段（如伪造 approved），返回错误串而非抛 TypeError。"""
+    schema = next((t["input_schema"] for t in TOOLS if t["name"] == name), {})
+    unknown = sorted(set(tool_input) - set(schema.get("properties", tool_input)))
+    missing = [k for k in schema.get("required", []) if k not in tool_input]
+    return (unknown or missing) and f"Error: invalid arguments for {name}: unknown={unknown} missing={missing}"
+
+
 def agent_loop(messages: list):
     """Agent loop with skill auto-matching and on-demand loading."""
     while True:
@@ -864,7 +873,8 @@ def agent_loop(messages: list):
             if not allowed:
                 output = f"Permission denied: {reason}"
             else:
-                output = handler(**tool_input) if handler else f"Unknown: {block.name}"
+                output = invalid_tool_args(block.name, tool_input) or (
+                    handler(**tool_input) if handler else f"Unknown: {block.name}")
 
             # Special display for Skill tool
             if block.name == "Skill":
