@@ -312,21 +312,44 @@ def _command(request: ToolRequest) -> str:
 
 
 _SHELL_SEPARATORS = ";&|()\n"
+# <> 只参与切词，不参与命令分隔：紧贴的 rm</dev/null 才能拆出 rm，且重定向不重置选项累计。
+_SHELL_PUNCTUATION = _SHELL_SEPARATORS + "<>"
+_REDIRECT_OPERATORS = frozenset({"<", ">", ">>", ">&", "<&", "&>", "&>>", "<<", "<<<"})
+
+
+def _is_redirect_operator(token: str) -> bool:
+    """未引用的重定向运算符（可带前导 fd 数字）；目标由调用方跳过。"""
+    index = 0
+    while index < len(token) and token[index].isdigit():
+        index += 1
+    return index < len(token) and token[index:] in _REDIRECT_OPERATORS
 
 
 def _is_recursive_force_rm(command: str) -> bool:
     """按 rm 的全部选项判断是否「递归 + 强制」；选项只算到同一条命令的分隔符为止。
 
     这是字符串级预检，宁可多拒：`echo rm -r -f` 也会命中，和旧正则对 `echo rm -rf` 的处理一致。
+    未引用的 < > 重定向会切出运算符并跳过目标，不打断同一条 rm 的选项累计。
     """
-    lexer = shlex.shlex(command.replace("\\\n", ""), posix=True, punctuation_chars=_SHELL_SEPARATORS)
+    lexer = shlex.shlex(command.replace("\\\n", ""), posix=True, punctuation_chars=_SHELL_PUNCTUATION)
     lexer.whitespace, lexer.whitespace_split, lexer.commenters = " \t\r", True, ""
     try:
         tokens = [token.lower() for token in lexer]  # 与 shell 一样去掉引号和反斜杠
     except ValueError:  # 引号不配对：bash 本身也不会执行这种命令，保守地按硬拒绝处理
         return re.search(r"\brm\b", command, re.IGNORECASE) is not None
     in_rm = options_done = recursive = force = False
-    for token in tokens + [";"]:
+    tokens = tokens + [";"]
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        index += 1
+        if _is_redirect_operator(token):
+            # 跳过重定向目标，保留 in_rm / recursive / force / options_done
+            if index < len(tokens):
+                nxt = tokens[index]
+                if not (nxt and set(nxt) <= set(_SHELL_SEPARATORS)) and not _is_redirect_operator(nxt):
+                    index += 1
+            continue
         if token and set(token) <= set(_SHELL_SEPARATORS):
             if recursive and force:
                 return True
