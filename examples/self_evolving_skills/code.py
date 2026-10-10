@@ -10,6 +10,7 @@ it enters the versioned skill library.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -470,15 +471,14 @@ class EvolutionStore:
         _atomic_write_text(
             manifest_path, json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
         )
-        # 先原子写指针（失败则旧文件不变、未写审计）；审计打开或写入失败时截掉半行并恢复原
-        # manifest，不留无记录的切换，重试不会命中幂等分支，成功后只有一条完整事件。
+        # 先原子写指针；审计失败时先恢复原 manifest，再尽力截掉半行（清理失败被忽略），抛原异常。
         details = {"title": safe_title, "from_version": previous, "to_version": version}
         try:
             self.append_audit("skill_activated", {**details, "approved_by": approver, "reason": why})
         except BaseException:
-            if self.audit_path.is_file():
-                os.truncate(self.audit_path, audit_size)
             _atomic_write_text(manifest_path, old_manifest)
+            with contextlib.suppress(OSError):
+                os.truncate(self.audit_path, audit_size)
             raise
         return path
 
