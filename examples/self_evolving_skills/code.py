@@ -463,14 +463,23 @@ class EvolutionStore:
         if type(previous) is int and previous == version:
             # 已经生效：幂等返回，不写 manifest，也不写审计
             return path
+        manifest_path = self.skills_dir / safe_title / "manifest.json"
+        old_manifest = manifest_path.read_text(encoding="utf-8")
+        audit_size = self.audit_path.stat().st_size if self.audit_path.is_file() else 0
         manifest["active_version"] = version
         _atomic_write_text(
-            self.skills_dir / safe_title / "manifest.json",
-            json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+            manifest_path, json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
         )
-        # 切换记录只写审计日志，以 evolution-audit.jsonl 为唯一依据
+        # 先原子写指针（失败则旧文件不变、未写审计）；审计打开或写入失败时截掉半行并恢复原
+        # manifest，不留无记录的切换，重试不会命中幂等分支，成功后只有一条完整事件。
         details = {"title": safe_title, "from_version": previous, "to_version": version}
-        self.append_audit("skill_activated", {**details, "approved_by": approver, "reason": why})
+        try:
+            self.append_audit("skill_activated", {**details, "approved_by": approver, "reason": why})
+        except BaseException:
+            if self.audit_path.is_file():
+                os.truncate(self.audit_path, audit_size)
+            _atomic_write_text(manifest_path, old_manifest)
+            raise
         return path
 
     def active_skill_path(self, title: str) -> Path | None:

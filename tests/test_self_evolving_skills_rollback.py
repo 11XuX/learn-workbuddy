@@ -213,3 +213,19 @@ def test_active_skill_path_rejects_broken_state(evolution, library, damage: str)
 
     with pytest.raises(evolution.EvolutionError):
         store.active_skill_path(FAMILY)
+
+
+def test_partial_audit_write_is_rolled_back_then_retry_succeeds(library, monkeypatch) -> None:
+    store, before = library[0], _snapshot(library[0])
+
+    def torn_write(action, details):
+        store.audit_path.open("a", encoding="utf-8").write('{"action": "skill_act')
+        raise OSError("disk full")
+
+    monkeypatch.setattr(store, "append_audit", torn_write)
+    with pytest.raises(OSError):
+        _rollback(store)
+    monkeypatch.undo()
+    assert _snapshot(store) == before
+    _rollback(store)
+    assert store.audit_path.read_bytes().count(b"skill_activated") == 1
