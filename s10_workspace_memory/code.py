@@ -251,6 +251,8 @@ class DistillPolicy:
     minimum_importance: int = 4
     repeat_threshold: int = 2
     supersession_repeat_threshold: int = 2
+    # 仅对本进程 confirm_fact 确认过的事实生效，日志 source 字段不参与
+    confirmed_importance_bonus: int = 1
     stable_kinds: frozenset[str] = frozenset(
         {FactKind.DECISION.value, FactKind.CONVENTION.value, FactKind.PITFALL.value}
     )
@@ -955,6 +957,8 @@ class WorkspaceMemory:
             self.memory_dir / "conflict-resolution-transactions.jsonl"
         )
         self.daily_dir.mkdir(parents=True, exist_ok=True)
+        # 确认凭据只在 harness 进程内存里，bash 子进程改不到；重启即清空
+        self._session_confirmed: dict[str, MemoryFact] = {}
         self._recover_resolution_transactions()
 
     def daily_log_path(self, day: date) -> Path:
@@ -1026,6 +1030,20 @@ class WorkspaceMemory:
         finally:
             os.close(descriptor)
         return fact
+
+    def confirm_fact(self, content: str, *, kind: str | FactKind, importance: int) -> MemoryFact:
+        """Record a user-confirmed fact; only this process can vouch for it."""
+
+        fact = self.append_daily_log(
+            content, kind=kind, importance=importance,
+            source="user_confirmed", evidence={"actor": "local-cli-user"},
+        )
+        self._session_confirmed[fact.fact_id] = fact
+        return fact
+
+    def is_session_confirmed(self, fact: MemoryFact) -> bool:
+        # 整条记录比对：伪造新 id 或复用 id 篡改内容都不算
+        return self._session_confirmed.get(fact.fact_id) == fact
 
     def list_logs(self) -> list[Path]:
         return sorted(self.daily_dir.glob("????-??-??.jsonl"))
@@ -1995,9 +2013,15 @@ class WorkspaceMemory:
         def distinct(facts: list[MemoryFact]) -> list[MemoryFact]:
             return list({fact.fact_id: fact for fact in facts}.values())
 
-        def qualifies(facts: list[MemoryFact]) -> bool:
+        def effective_importance(fact: MemoryFact, first: bool) -> int:
+            if first and self.is_session_confirmed(fact):
+                return min(5, fact.importance + active_policy.confirmed_importance_bonus)
+            return fact.importance
+
+        def qualifies(facts: list[MemoryFact], first: bool = False) -> bool:
+            # 来源加成只用于首次晋升，supersession 不受影响
             return (
-                max(fact.importance for fact in facts)
+                max(effective_importance(fact, first) for fact in facts)
                 >= active_policy.minimum_importance
                 or len(facts) >= active_policy.repeat_threshold
             )
@@ -2023,7 +2047,7 @@ class WorkspaceMemory:
         for key in sorted(legacy_groups):
             facts = distinct(legacy_groups[key])
             current = by_key.get(key)
-            if current is None and not qualifies(facts):
+            if current is None and not qualifies(facts, first=True):
                 skipped += len(facts)
                 continue
 
@@ -2129,7 +2153,7 @@ class WorkspaceMemory:
                     ):
                         skipped += len(facts)
                         continue
-                if not qualifies(facts):
+                if not qualifies(facts, first=current is None):
                     skipped += len(facts)
                     continue
                 if current is not None:
@@ -2435,13 +2459,18 @@ def _print_report(report: DistillReport) -> None:
         print("review:  " + ", ".join(report.conflict_case_ids))
 
 
+def _format_fact(memory: WorkspaceMemory, fact: MemoryFact) -> str:
+    marker = ", confirmed=session" if memory.is_session_confirmed(fact) else ""
+    return f"[{fact.kind}] {fact.content} ({fact.importance}/5, source={fact.source}{marker})"
+
+
 def main() -> None:
     print("s10: Workspace Memory — append facts, distill durable knowledge")
     memory = WorkspaceMemory(WORKDIR)
     agent = MemoryAwareAgent(WORKDIR, memory)
     print(f"workspace: {memory.project_dir}")
     print(f"memory:    {memory.memory_dir}")
-    print("commands: /memory /today /logs /distill /conflicts /resolve /reset q")
+    print("commands: /memory /today /logs /distill /conflicts /resolve /confirm /reset q")
 
     while True:
         try:
@@ -2458,7 +2487,7 @@ def main() -> None:
         if query == "/today":
             facts = memory.read_daily_facts()
             for fact in facts:
-                print(f"[{fact.kind}] {fact.content} ({fact.importance}/5)")
+                print(_format_fact(memory, fact))
             if not facts:
                 print("(no facts today)")
             continue
@@ -2512,6 +2541,20 @@ def main() -> None:
                     f"resolved {event.conflict_id} -> "
                     f"{event.selected_candidate_id} ({event.event_id})"
                 )
+            continue
+        if query.startswith("/confirm"):
+            parts = query.split(maxsplit=3)
+            if len(parts) != 4 or not parts[2].isdigit():
+                print("usage: /confirm <kind> <importance> <content>")
+                continue
+            try:
+                fact = memory.confirm_fact(
+                    parts[3], kind=parts[1], importance=int(parts[2])
+                )
+            except ValueError as exc:
+                print(f"confirm rejected: {exc}")
+            else:
+                print(f"confirmed: {_format_fact(memory, fact)}")
             continue
         if query == "/reset":
             agent.messages.clear()

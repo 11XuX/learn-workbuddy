@@ -290,6 +290,51 @@ python3 s10_workspace_memory/code.py
 
 工作区记忆属于当前项目；s11 才会处理跨项目的用户偏好，s12 再讨论远端 profile/recall。三层不能只按“文件放在哪里”区分，更重要的是 owner、写入权限、保留策略和召回时机不同。
 
+## 来源确认加成
+
+### 问题
+
+`MemoryFact.source` 早已落盘，但晋升门槛不看来源；而本章模型还有 `bash`，能直接往 daily log 追加一行 `source="user_confirmed"`。日志字段一旦决定加成，就能被一条 shell 命令伪造。
+
+### 解决方案
+
+确认凭据放在 harness 进程内存里：`WorkspaceMemory.confirm_fact()` 照常落盘（`source="user_confirmed"`），同时把整条 `MemoryFact` 记入 `_session_confirmed`。`DistillPolicy.confirmed_importance_bonus`（默认 1）只给 `_session_confirmed.get(fact.fact_id) == fact` 的事实。
+
+### 工作原理
+
+```mermaid
+flowchart LR
+    U[/confirm/] --> C[confirm_fact]
+    C --> L[(daily log)]
+    C --> S[_session_confirmed]
+    B[bash] --> L
+    L --> D{distill: 整条记录在 S 中?}
+    S --> D
+    D -- 是 --> P[importance + bonus]
+    D -- 否 --> N[原门槛]
+```
+
+- 日志里的 `source` 只是审计标签，不参与判定；伪造新 fact_id 或复用 fact_id 改内容都比对失败。
+- 加成只用于首次晋升（该 key 尚无 active 条目），supersession、裁决和 journal 不受影响。
+- 残余限制：确认不跨重启；默认 `minimum_age_days=30`，当天 `/confirm` 后 `/distill` 看不到晋升（测试用 `distill(as_of=...)` 演示）；有 shell 的模型仍能改日志里的 importance 等内容，这属于 s04 权限策略的范围。
+
+### 试一下
+
+```text
+s10 >> /confirm convention 3 提交前运行 ruff
+confirmed: [convention] 提交前运行 ruff (3/5, source=user_confirmed, confirmed=session)
+s10 >> /today
+[convention] 提交前运行 ruff (3/5, source=user_confirmed, confirmed=session)
+```
+
+### 架构对照
+
+| 写入路径 | 落盘 source | 首次晋升加成 |
+|---|---|---|
+| CLI `/confirm` | `user_confirmed` | 本进程内 +1 |
+| `write_memory` 工具 | `model_tool` | 无 |
+| 重启后的旧确认 | `user_confirmed` | 无 |
+
 ## 常见误区
 
 - **把 transcript 当 memory**：完整轨迹会迅速挤满上下文。
@@ -310,9 +355,10 @@ python3 s10_workspace_memory/code.py
 
 ## 练习
 
-1. 为 `DistillPolicy` 增加来源置信度，让用户确认的事实比工具推断更容易晋升。
+1. 设计一个能跨重启、且同一用户下的 shell 也伪造不了的确认凭据（例如由独立进程持有密钥的签名），并说明它依赖哪条操作系统边界。（来源置信度已实现：见「来源确认加成」）
 2. 为多进程 reviewer 增加 workspace-scoped lease，证明两个同时 prepare 的裁决不会交错写入同一个冲突域。
 3. 在不加载全部日志的前提下实现按日期倒序读取最近事实。
+4. 思考：为什么本章把确认放在进程内存里，而不是日志字段或单独的文件里？
 
 ## 下一课
 
