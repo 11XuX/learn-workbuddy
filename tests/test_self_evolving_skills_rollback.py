@@ -134,14 +134,9 @@ def _edit(path: Path, old: str, new: str) -> None:
     path.write_text(text.replace(old, new, 1), encoding="utf-8")
 
 
-def _symlink_loop(path: Path) -> None:
-    path.unlink()
-    path.symlink_to(path)
-
-
 TAMPERS = {
     "release_deleted": lambda release, evidence: release.unlink(),
-    "release_symlink_loop": lambda release, evidence: _symlink_loop(release),
+    "release_symlink_loop": lambda release, evidence: (release.unlink(), release.symlink_to(release)),
     "status_edited": lambda release, evidence: _edit(release, "status: approved", "status: candidate"),
     "version_edited": lambda release, evidence: _edit(release, "version: 1", "version: 2"),
     "procedure_only": lambda release, evidence: _edit(release, "1. Inspect", "1. Skip"),

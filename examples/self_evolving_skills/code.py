@@ -182,8 +182,11 @@ class EvolutionStore:
 
     def append_audit(self, action: str, details: Mapping[str, object]) -> None:
         event = {"timestamp": _utc_now(), "action": action, "details": dict(details)}
-        with self.audit_path.open("a", encoding="utf-8", newline="\n") as handle:
-            handle.write(json.dumps(event, sort_keys=True, ensure_ascii=False) + "\n")
+        with self.audit_path.open("ab+") as handle:  # 末尾残留半行时先补换行，新事件独占一行
+            size = handle.seek(0, os.SEEK_END)
+            handle.seek(max(size - 1, 0))
+            pad = b"\n" if size and handle.read(1) != b"\n" else b""
+            handle.write(pad + (json.dumps(event, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8"))
             handle.flush()
             os.fsync(handle.fileno())
 
@@ -468,10 +471,8 @@ class EvolutionStore:
         old_manifest = manifest_path.read_text(encoding="utf-8")
         audit_size = self.audit_path.stat().st_size if self.audit_path.is_file() else 0
         manifest["active_version"] = version
-        _atomic_write_text(
-            manifest_path, json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
-        )
-        # 先原子写指针；审计失败时先恢复原 manifest，再尽力截掉半行（清理失败被忽略），抛原异常。
+        _atomic_write_text(manifest_path, json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
+        # 先原子写指针；审计（含补换行）失败时先恢复原 manifest，再尽力截掉半行（清理失败被忽略），抛原异常。
         details = {"title": safe_title, "from_version": previous, "to_version": version}
         try:
             self.append_audit("skill_activated", {**details, "approved_by": approver, "reason": why})
