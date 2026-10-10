@@ -171,13 +171,58 @@ python3 s10_workspace_memory/code.py
 
 ![Chapter diagram 2](./images/three-layer-memory-en.svg)
 
+## Source Confirmation Bonus
+
+### Problem
+
+`MemoryFact.source` is already persisted, but the promotion gate ignores it. The model also has `bash` and can append a line with `source="user_confirmed"` to the daily log, so any bonus driven by that field can be forged by one shell command.
+
+### Solution
+
+The confirmation credential lives in harness process memory. `WorkspaceMemory.confirm_fact()` persists the fact as usual (`source="user_confirmed"`) and records the whole `MemoryFact` in `_session_confirmed`. `DistillPolicy.confirmed_importance_bonus` (default 1) applies only when `_session_confirmed.get(fact.fact_id) == fact`.
+
+### How It Works
+
+```mermaid
+flowchart LR
+    U[/confirm/] --> C[confirm_fact]
+    C --> L[(daily log)]
+    C --> S[_session_confirmed]
+    B[bash] --> L
+    L --> D{distill: whole record in S?}
+    S --> D
+    D -- yes --> P[importance + bonus]
+    D -- no --> N[normal gate]
+```
+
+- The logged `source` is only an audit label; a forged fact_id or a reused fact_id with edited content fails the comparison.
+- The bonus applies only to first promotion (no active entry for the key); supersession, adjudication, and the journal are unchanged.
+- Residual limits: confirmation does not survive a restart; with the default `minimum_age_days=30`, `/distill` right after `/confirm` promotes nothing (tests use `distill(as_of=...)`); a model with a shell can still edit other log fields such as importance, which belongs to the s04 permission policy.
+
+### Try It
+
+```text
+s10 >> /confirm convention 3 Run ruff before commit
+confirmed: [convention] Run ruff before commit (3/5, source=user_confirmed, confirmed=session)
+s10 >> /today
+[convention] Run ruff before commit (3/5, source=user_confirmed, confirmed=session)
+```
+
+### Architecture Mapping
+
+| Write path | Persisted source | First-promotion bonus |
+|---|---|---|
+| CLI `/confirm` | `user_confirmed` | +1 in this process |
+| `write_memory` tool | `model_tool` | none |
+| old confirmation after restart | `user_confirmed` | none |
+
 ## Common Mistakes
 
 Do not promote every sentence to memory, overwrite history during deduplication, or resolve a conflict without recording the decision and evidence.
 
 ## Exercises
 
-Use these exercises to change one part of workspace-owned durable facts, provenance, and atomic recovery at a time and explain the resulting contract.
+Use these exercises to change one part of workspace-owned durable facts, provenance, and atomic recovery at a time and explain the resulting contract. Source confidence is already implemented as an in-process confirmation bonus (see Source Confirmation Bonus); confirmation does not survive a restart.
 
 ## Next Lesson
 
