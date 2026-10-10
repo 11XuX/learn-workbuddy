@@ -1,43 +1,23 @@
-"""json.dumps(ensure_ascii=False) vs str.splitlines() line-separator bug.
+"""JSONL writers use json.dumps(ensure_ascii=False); readers use str.splitlines().
 
-Writer path (shared across sites): ``json.dumps(..., ensure_ascii=False) + "\\n"``.
-JSON leaves U+2028 (LINE SEPARATOR), U+2029 (PARAGRAPH SEPARATOR), and U+0085
-(NEXT LINE) as raw characters inside string values. Reader path uses
-``str.splitlines()``, which treats those three as line breaks, so one logical
-JSON record is chopped into multiple non-JSON fragments.
+ensure_ascii=False leaves U+2028, U+2029 and U+0085 raw inside JSON strings,
+and str.splitlines() breaks on all three, so one record becomes fragments.
+Contract: one JSON object per "\\n"-terminated line (s09/s10/s12/s23 READMEs,
+s24 adapters, mini_workbuddy AuditLog chain); a round-trip keeps one record.
 
-Contract: each site's durable log is "one JSON object per ``\\n``-terminated
-line" (s09 README "每行一个 JSON"; s10 "每个 JSON 对象编码为一行"; s12 JSONL
-store; s23 "一行一条记录"; mini_workbuddy AuditLog hash chain; s24 transcript /
-workspace adapters). Round-trip of a single append containing any of those
-three characters in a non-whitespace-normalized field must keep exactly one
-readable record with the original value intact.
+Locked fix shape: keep read_text() newline handling ("\\r\\n"/"\\r" -> "\\n",
+as pinned by test_s09_unterminated_line_adversarial), then split on "\\n" only.
 
-Expected fix shape (locked here): record readers that claim JSONL semantics
-split on ``"\\n"`` only (or equivalent byte ``b"\\n"``), never
-``str.splitlines()``. Writers may keep ``ensure_ascii=False``. Compatible with
-fork card #11's raw-byte trailing-newline check on s09.
-
-Sites under test (Critic may split):
-1. s09_jsonl_transcript — JSONLTranscript replay
-2. s10_workspace_memory — WorkspaceMemory daily log (source / evidence)
-3. s12_cloud_memory — RemoteMemoryStore (memory_id)
-4. s23_audit_sandbox — append_audit_entry / verify_chain
-5. s24_comprehensive — Transcript.read / Memory.get_workspace
-6. mini_workbuddy/audit.py — AuditLog.verify / subsequent append
-7. s13_output_externalization — ArtifactRetentionJournal (decodes bytes, then
-   str.splitlines(keepends=True)); all writer-side fields are ASCII-validated,
-   so the repro is a hash-valid record carrying an extra top-level field.
-
-Round-1 additions: s09 boundary with #11 (U+2028 record + partial tail must
-still refuse append), and an s23 control proving legacy head counts unchanged.
+Sites: s09 replay, s10 daily log, s12 RemoteMemoryStore, s23 audit chain,
+s24 Transcript/Memory, mini_workbuddy/audit.py, s13 retention journal (writer
+fields are ASCII-validated, so the repro is a hash-valid extra field). Plus an
+s09 #11 partial-tail boundary and an s23 legacy-chain control.
 """
 
 from __future__ import annotations
 
 import importlib.util
 import json
-import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -280,12 +260,8 @@ def s13(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
 def test_s13_retention_journal_reads_hash_valid_record_with_line_separator(
     s13, tmp_path: Path, breaker: str
 ) -> None:
-    """Bug repro: reader decodes then splitlines(); a valid record is rejected.
-
-    The journal reader accepts extra top-level fields as long as event_sha256
-    covers them, and the writer serializes with ensure_ascii=False. A
-    hash-valid record whose extra field holds a line separator must replay.
-    """
+    """Bug repro: an extra field covered by event_sha256 is accepted by the
+    reader, but decode().splitlines() rejects the record as invalid JSON."""
     session_dir = tmp_path / "sess-u2028"
     artifact = s13.ToolResultExternalizer(session_dir).externalize(
         "durable evidence", "search", summary="Evidence for the journal."
@@ -349,11 +325,7 @@ def test_s09_separator_record_then_partial_tail_still_refuses_append(
 
 
 def test_s23_legacy_chain_head_count_unchanged_and_verifies(s23) -> None:
-    """Control (passes on main): chains without the three characters are unaffected.
-
-    The head count must equal the number of b"\\n"-terminated records, both
-    before and after the fix, so existing audit heads stay valid.
-    """
+    """Control (passes on main and after the fix): legacy heads stay valid."""
     payloads = [{"cmd": "ls"}, {"cmd": "echo 你好"}, {"cmd": "tab\there"}]
     for params in payloads:
         s23.append_audit_entry("run", params, "ok")
