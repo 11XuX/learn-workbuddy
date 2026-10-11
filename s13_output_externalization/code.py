@@ -1717,9 +1717,13 @@ class ToolResultExternalizer:
         )
 
         if artifact.source_tool == "bash":
-            head = output[:HEAD_BYTES]
-            tail = output[-TAIL_BYTES:]
-            omitted = max(size - HEAD_BYTES - TAIL_BYTES, 0)
+            # 按 UTF-8 字节切片；ignore 丢弃被切断的半个码点
+            raw = output.encode("utf-8")
+            head = raw[:HEAD_BYTES].decode("utf-8", "ignore")
+            # tail 起点不早于 head 末尾，避免重叠重复
+            tail_start = max(len(raw) - TAIL_BYTES, HEAD_BYTES)
+            tail = raw[tail_start:].decode("utf-8", "ignore")
+            omitted = size - len(head) - len(tail)
             return (
                 f"{header}\n{head}\n"
                 f"\n... [{omitted} characters omitted, "
