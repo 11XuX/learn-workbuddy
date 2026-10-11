@@ -61,3 +61,19 @@ def test_returned_id_round_trips_through_retract(s12, store) -> None:
     assert record.memory_id == store.read_all()[0].memory_id
     store.retract(record.memory_id, reason="r", source=_src(s12))
     assert store.active_records() == []
+
+
+# 控制用例：校验只针对显式传入的非空 id；省略 / None / "" 仍走 uuid 自动生成。
+@pytest.mark.parametrize("memory_id", ["<omitted>", None, ""])
+def test_control_missing_or_empty_id_autogenerates_uuid(s12, store, memory_id) -> None:
+    if memory_id == "<omitted>":
+        record = store.append(kind=s12.MemoryKind.CONVERSATION, content="python notes",
+                              summary="python notes", source=_src(s12))
+    else:
+        record = _add(s12, store, memory_id)
+    assert type(record.memory_id) is str
+    assert len(record.memory_id) == 32 and int(record.memory_id, 16) >= 0  # uuid4().hex
+    second = _add(s12, store, memory_id if memory_id != "<omitted>" else None)
+    assert second.memory_id != record.memory_id
+    reloaded = s12.RemoteMemoryStore(store.path, user_id="u")
+    assert [r.memory_id for r in reloaded.read_all()] == [record.memory_id, second.memory_id]
