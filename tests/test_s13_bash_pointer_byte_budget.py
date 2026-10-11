@@ -3,8 +3,8 @@
 Docs and constants advertise a ~30KB context pointer (head 6KB + tail 24KB).
 ``make_pointer`` currently slices the Unicode string by character index, so:
 
-1. Just above the bash char threshold, head and tail overlap and the pointer
-   is *larger* than the original output (externalization makes context worse).
+1. Just above the bash char threshold, head and tail overlap and the same
+   lines are copied into context twice (pointer larger than the output).
 2. Multi-byte UTF-8 tool output inflates the pointer far past the advertised
    30KB byte budget (e.g. ~85KB for a 30001-character Chinese transcript).
 """
@@ -43,21 +43,49 @@ def _externalize(s13, session: Path, output: str):
         return externalizer.externalize(output, "bash")
 
 
-def test_bash_pointer_near_threshold_must_not_bloat_context(s13, tmp_path: Path) -> None:
-    """Externalization must shrink context, even just above the bash threshold."""
+def _numbered_lines(total_chars: int) -> str:
+    lines = []
+    n = 0
+    while sum(len(x) for x in lines) < total_chars + 64:
+        lines.append(f"line-{n:06d}\n")
+        n += 1
+    return "".join(lines)[:total_chars]
+
+
+def test_bash_pointer_head_and_tail_must_not_overlap(s13, tmp_path: Path) -> None:
+    """The ``[N omitted]`` marker means head and tail are disjoint slices.
+
+    ``omitted = max(size - HEAD_BYTES - TAIL_BYTES, 0)`` clamps to 0 just above
+    the bash threshold (30000 chars < 30720), but the slices still overlap, so
+    the same lines are copied into context twice.
+    """
 
     size = s13.BASH_MAX_OUTPUT_LENGTH + 1
-    output = ("todo item here\n" * ((size // 15) + 10))[:size]
+    output = _numbered_lines(size)
     assert len(output) == size
 
-    result = _externalize(s13, tmp_path / "session-ascii", output)
-    pointer = result.context_text
-
-    assert len(pointer) < len(output), (
-        "bash pointer must be smaller than the original tool output; "
-        f"got pointer={len(pointer)} chars vs output={len(output)} chars "
-        "(head/tail character slices overlap when size < HEAD_BYTES+TAIL_BYTES)"
+    pointer = _externalize(s13, tmp_path / "session-ascii", output).context_text
+    duplicated = [
+        line for line in set(output.splitlines()[1:-1]) if pointer.count(line) > 1
+    ]
+    assert not duplicated, (
+        "bash pointer head/tail must not repeat the same output lines; "
+        f"{len(duplicated)} lines appear twice (pointer={len(pointer)} chars vs "
+        f"output={len(output)} chars)"
     )
+
+
+def test_control_large_ascii_pointer_is_bounded_and_keeps_both_ends(
+    s13, tmp_path: Path
+) -> None:
+    """Control: ASCII well above threshold already behaves (passes on main)."""
+
+    output = _numbered_lines(200_000)
+    pointer = _externalize(s13, tmp_path / "session-big", output).context_text
+    assert len(pointer.encode("utf-8")) <= s13.HEAD_BYTES + s13.TAIL_BYTES + 2048
+    assert output[:200] in pointer
+    assert output[-200:] in pointer
+    assert pointer.count("line-000002\n") == 1  # line 0 is reused as summary
 
 
 def test_bash_pointer_utf8_respects_advertised_byte_budget(s13, tmp_path: Path) -> None:
