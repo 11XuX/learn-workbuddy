@@ -394,6 +394,42 @@ s09 transcript 可以成为 s12 StoredMemory 的 source，但“有 transcript�
 - Recall 多次执行：不会改变 durable store；
 - Profile snapshot：只用于 profile selection，不混入 conversation hits。
 
+## 撤回：退出视图，不改写历史
+
+### 问题
+
+写错的对话记忆或用户要求忘掉的记忆会被一直召回；写错的 profile 快照也撤销不了。只追加的日志不能改写历史，「忘」该怎么表达？
+
+### 解决方案
+
+`retract(target_id, reason=..., source=...)` 追加一条 `kind=retraction` 事件，`retracts` 指向目标。原记录仍留在 `read_all()` 审计流里；`recall` 和 `latest_profile` 改读 `active_records()` 有效视图。
+
+### 工作原理
+
+- 撤回 id 由目标确定性推导：`"retraction-" + sha256(target_id)[:24]`，重复撤回返回同一条记录；推导 id 被别的记录占用时抛 `RemoteMemoryDuplicateError`；
+- `target_id` 和撤回 id 都过 `_require_record_id`：只认内建 `str`，非空、无首尾空白、不超过 200 字符；
+- 公开 `append()` 拒绝 `RETRACTION`；撤回未知 id 或撤回一条撤回都会被拒绝，文件不变；
+- `active_records()` 按原始 JSON 类型校验磁盘上的撤回记录，不合法即 `RemoteMemoryCorruptionError`。
+
+已知限制：非撤回记录的 `append()` 仍接受 `int`、`str` 子类与空串 id（空串换成 uuid）；首尾带空白或超过 200 字符的旧记录无法撤回，`retract()` 会明确报错。
+
+### 试一下
+
+```python
+store.retract("conv-1", reason="用户要求忘掉", source=source)
+assert "conv-1" in {r.memory_id for r in store.read_all()}
+assert "conv-1" not in {r.memory_id for r in store.active_records()}
+```
+
+### 架构对照
+
+| 视图 | 方法 | 包含撤回的内容 |
+| --- | --- | --- |
+| 审计流 | `read_all()` | 是 |
+| 有效视图 | `active_records()` | 否 |
+
+留给读者：为 `RecallResult` 增加 `retracted_records`，并说明这个数字会不会泄露被撤回的内容；实现物理 purge，在保留撤回事件的前提下抹掉被撤回内容，并设计崩溃中断后的恢复。
+
 ## 无 key 组合边界
 
 `RemoteMemoryStore`、`RecallEngine` 和 context renderer 都是纯本地机制。导入这些类型时不应要求模型配置，也不应因为 import 就向默认目录写 seed records。因此在线副作用分成两个延迟入口：

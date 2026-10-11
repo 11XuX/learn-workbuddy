@@ -160,6 +160,7 @@ class MemoryKind(str, Enum):
 
     PROFILE = "profile"
     CONVERSATION = "conversation"
+    RETRACTION = "retraction"
 
 
 @dataclass(frozen=True)
@@ -196,19 +197,25 @@ class StoredMemory:
     source: MemorySource
     stored_at: str
     schema_version: int = SCHEMA_VERSION
+    retracts: str | None = None
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, object]) -> "StoredMemory":
         try:
+            kind = MemoryKind(str(payload["kind"]))
+            # 撤回记录保留原始 JSON 类型，交给 active_records() 校验
+            raw_id = payload["memory_id"]
+            hash(raw_id)  # list/dict 等不可哈希类型直接判为损坏
             return cls(
-                memory_id=str(payload["memory_id"]),
+                memory_id=raw_id if kind is MemoryKind.RETRACTION else str(raw_id),
                 user_scope=str(payload["user_scope"]),
-                kind=MemoryKind(str(payload["kind"])),
+                kind=kind,
                 content=str(payload["content"]),
                 summary=str(payload["summary"]),
                 source=MemorySource.from_dict(dict(payload["source"])),
                 stored_at=str(payload["stored_at"]),
                 schema_version=int(payload.get("schema_version", SCHEMA_VERSION)),
+                retracts=payload.get("retracts"),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise RemoteMemoryCorruptionError(f"invalid stored memory: {exc}") from exc
@@ -216,6 +223,8 @@ class StoredMemory:
     def to_dict(self) -> dict[str, object]:
         payload = asdict(self)
         payload["kind"] = self.kind.value
+        if self.retracts is None:
+            payload.pop("retracts")
         return payload
 
 
@@ -417,6 +426,23 @@ def _clean_text(value: object, *, field_name: str, max_chars: int) -> str:
             f"{field_name} exceeds the {max_chars}-character teaching limit"
         )
     return text
+
+
+def _require_record_id(value: object, *, field_name: str) -> str:
+    """撤回路径共用的 id 校验：只认内建 str，不做归一化。"""
+
+    if type(value) is not str:
+        raise RemoteMemoryValidationError(f"{field_name} must be a built-in str")
+    if not value or value != value.strip() or len(value) > 200:
+        raise RemoteMemoryValidationError(
+            f"{field_name} must be 1-200 chars without surrounding whitespace"
+        )
+    return value
+
+
+def _retraction_id(target_id: str) -> str:
+    digest = hashlib.sha256(target_id.encode("utf-8")).hexdigest()[:24]
+    return _require_record_id(f"retraction-{digest}", field_name="retraction_id")
 
 
 def _validate_source(source: MemorySource) -> MemorySource:
@@ -662,6 +688,8 @@ class RemoteMemoryStore:
         check-then-act race between concurrent harness retries.
         """
 
+        if MemoryKind(kind) is MemoryKind.RETRACTION:
+            raise RemoteMemoryValidationError("use retract() to write retractions")
         record = StoredMemory(
             memory_id=memory_id or uuid.uuid4().hex,
             user_scope=self.user_scope,
@@ -673,14 +701,25 @@ class RemoteMemoryStore:
             source=_validate_source(source),
             stored_at=_iso(stored_at),
         )
+        return self._append_record(record)
+
+    def _append_record(self, record: StoredMemory) -> StoredMemory:
+        # 整行一次 O_APPEND 写入；校验或去重失败时文件不变
         self.path.parent.mkdir(parents=True, exist_ok=True)
         encoded = (
             json.dumps(record.to_dict(), ensure_ascii=False, separators=(",", ":"))
             + "\n"
         ).encode("utf-8")
         with _exclusive_store_lock(self.path):
-            existing_ids = {item.memory_id for item in self.read_all()}
-            if record.memory_id in existing_ids:
+            existing = {item.memory_id: item for item in self.read_all()}
+            if record.memory_id in existing:
+                old = existing[record.memory_id]
+                if (
+                    record.kind is MemoryKind.RETRACTION
+                    and old.kind is MemoryKind.RETRACTION
+                    and old.retracts == record.retracts
+                ):
+                    return old  # 幂等：同一目标的撤回已存在
                 raise RemoteMemoryDuplicateError(
                     f"duplicate memory_id: {record.memory_id}"
                 )
@@ -724,10 +763,65 @@ class RemoteMemoryStore:
             raise RemoteMemoryCorruptionError("duplicate memory_id in durable store")
         return records
 
+    def retract(
+        self,
+        target_id: str,
+        *,
+        reason: str,
+        source: MemorySource,
+        stored_at: datetime | None = None,
+    ) -> StoredMemory:
+        """追加一条撤回事件；原记录仍留在 read_all() 审计流里。"""
+
+        target_id = _require_record_id(target_id, field_name="target_id")
+        reason = _clean_text(reason, field_name="retraction reason", max_chars=2_000)
+        source = _validate_source(source)
+        # 日志只增不减，目标存在性可在锁外检查
+        target = next((r for r in self.read_all() if r.memory_id == target_id), None)
+        if target is None or target.kind is MemoryKind.RETRACTION:
+            raise RemoteMemoryValidationError(f"cannot retract: {target_id!r}")
+        record = StoredMemory(
+            memory_id=_retraction_id(target_id),
+            user_scope=self.user_scope,
+            kind=MemoryKind.RETRACTION,
+            content=reason,
+            summary=reason,
+            source=source,
+            stored_at=_iso(stored_at),
+            retracts=target_id,
+        )
+        return self._append_record(record)
+
+    def active_records(self) -> list[StoredMemory]:
+        """有效视图：去掉撤回事件及被撤回的记录，并校验磁盘上的撤回记录。"""
+
+        records = self.read_all()
+        by_id = {record.memory_id: record for record in records}
+        retracted: set[str] = set()
+        for record in records:
+            if record.kind is not MemoryKind.RETRACTION:
+                continue
+            try:
+                memory_id = _require_record_id(record.memory_id, field_name="memory_id")
+                target = _require_record_id(record.retracts, field_name="retracts")
+            except RemoteMemoryValidationError as exc:
+                raise RemoteMemoryCorruptionError(f"invalid retraction: {exc}") from exc
+            if memory_id != _retraction_id(target) or target in retracted:
+                raise RemoteMemoryCorruptionError(f"invalid retraction id: {memory_id!r}")
+            hit = by_id.get(target)
+            if hit is None or hit.kind is MemoryKind.RETRACTION:
+                raise RemoteMemoryCorruptionError(f"dangling retraction: {memory_id!r}")
+            retracted.add(target)
+        return [
+            r
+            for r in records
+            if r.kind is not MemoryKind.RETRACTION and r.memory_id not in retracted
+        ]
+
     def latest_profile(self) -> StoredMemory | None:
         """Select the newest profile snapshot without treating it as recall."""
 
-        profiles = [record for record in self.read_all() if record.kind is MemoryKind.PROFILE]
+        profiles = [record for record in self.active_records() if record.kind is MemoryKind.PROFILE]
         if not profiles:
             return None
         return max(
@@ -767,7 +861,7 @@ class RecallEngine:
         )
         conversation_records = [
             record
-            for record in self.store.read_all()
+            for record in self.store.active_records()
             if record.kind is MemoryKind.CONVERSATION
         ]
         candidates = build_recall_candidates(query, conversation_records)
