@@ -8,6 +8,7 @@ import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -153,3 +154,39 @@ def test_repl_pending_demo_appends_archive_lines() -> None:
         "[archive] ship-docs archived_at=2026-10-09T10:00:00+00:00 source=transcript:demo:7",
         "[after-archive] (no pending work)",
     ]
+
+
+@pytest.mark.parametrize("bad_at", [0, -1])
+@pytest.mark.parametrize("bad", ["not-an-item", "bad-status", "naive-time"])
+def test_invalid_entry_at_head_or_tail_fails_whole_batch(s14, bad_at, bad) -> None:
+    due = [_item(s14, "a", "2026-09-01T00:00:00Z"), _item(s14, "b", "2026-09-02T00:00:00Z")]
+    entry = _item(s14, "x", "2026-09-03T00:00:00Z")
+    if bad == "not-an-item":
+        entry = SimpleNamespace(**vars(entry))
+    elif bad == "bad-status":
+        object.__setattr__(entry, "status", "archived")
+    else:
+        object.__setattr__(entry, "last_confirmed_at", "2026-09-03T00:00:00")
+    items = list(due)
+    items.insert(len(items) if bad_at == -1 else 0, entry)
+    state = s14.DurableContextState(pending_items=tuple(items))
+    original = state.pending_items
+    with pytest.raises(ValueError):
+        s14.archive_done_pending_items(
+            state, now=datetime(2026, 10, 9, tzinfo=timezone.utc), older_than=timedelta(days=7))
+    assert state.pending_items is original
+
+
+def test_audit_construction_failure_keeps_original_state(s14, monkeypatch) -> None:
+    items = (_item(s14, "a", "2026-09-01T00:00:00Z"), _item(s14, "b", "2026-09-02T00:00:00Z"))
+    state = s14.DurableContextState(pending_items=items)
+
+    def boom(item, archived_at):
+        raise RuntimeError("audit boom")
+
+    monkeypatch.setattr(s14, "ArchivedPendingItem", boom)
+    with pytest.raises(RuntimeError, match="audit boom"):
+        s14.archive_done_pending_items(
+            state, now=datetime(2026, 10, 9, tzinfo=timezone.utc), older_than=timedelta(days=7))
+    assert state.pending_items == items
+    assert all(a is b for a, b in zip(state.pending_items, items))

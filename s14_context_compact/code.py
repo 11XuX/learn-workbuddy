@@ -823,6 +823,16 @@ def archive_done_pending_items(
     if type(older_than) is not timedelta or older_than <= timedelta(0):
         raise ValueError("older_than must be a positive timedelta")
     archived_at = now.isoformat()
+    # 先逐项校验整批，任何非法条目都整批失败、state 不变
+    statuses = {s.value for s in PendingStatus}
+    for item in state.pending_items:
+        if type(item) is not PendingItem:
+            raise ValueError("pending_items must contain only PendingItem")
+        if type(item.status) is not str or item.status not in statuses:
+            raise ValueError("pending item has an invalid status")
+        if type(item.last_confirmed_at) is not str:
+            raise ValueError("last_confirmed_at must be a plain str")
+        _confirmed_at(item.last_confirmed_at)
     expired = []
     for item in state.pending_items:
         if item.status != PendingStatus.DONE.value:
@@ -833,6 +843,7 @@ def archive_done_pending_items(
             expired.append(item)
     if not expired:
         return state, ()
+    # 审计记录全部建好后才构造新 state；构造中途失败时原 state 不受影响
     records = tuple(ArchivedPendingItem(item, archived_at) for item in expired)
     gone = {id(item) for item in expired}
     kept = tuple(i for i in state.pending_items if id(i) not in gone)
