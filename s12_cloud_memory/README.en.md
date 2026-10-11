@@ -263,6 +263,42 @@ The transcript records events, workspace memory records project facts, and user 
 
 No match, invalid scope, provider failure, and malformed records remain explicit outcomes instead of silently becoming prompt context.
 
+## Retraction: Leave the View, Keep the History
+
+### Problem
+
+A wrong conversation memory, or one the user asked to forget, keeps being recalled, and a wrong profile snapshot cannot be undone. How do you "forget" in an append-only log that never rewrites history?
+
+### Solution
+
+`retract(target_id, reason=..., source=...)` appends a `kind=retraction` event whose `retracts` points at the target. The original stays in the `read_all()` audit stream; `recall` and `latest_profile` read the `active_records()` view instead.
+
+### How It Works
+
+- The retraction id is derived from the target: `"retraction-" + sha256(target_id)[:24]`, so repeating a retraction returns the same record; if another record owns that id, `RemoteMemoryDuplicateError` is raised;
+- `target_id` and the retraction id pass `_require_record_id`: built-in `str` only, non-empty, no surrounding whitespace, at most 200 chars;
+- Public `append()` rejects `RETRACTION`; retracting an unknown id or a retraction is rejected and leaves the file unchanged;
+- `active_records()` checks raw JSON types of retractions on disk and raises `RemoteMemoryCorruptionError` on any invalid one.
+
+Known limitation: `append()` for non-retraction records still accepts `int`, `str` subclasses and empty ids (empty becomes a uuid); legacy records with surrounding whitespace or over 200 chars cannot be retracted, and `retract()` says so explicitly.
+
+### Try It
+
+```python
+store.retract("conv-1", reason="user asked to forget", source=source)
+assert "conv-1" in {r.memory_id for r in store.read_all()}
+assert "conv-1" not in {r.memory_id for r in store.active_records()}
+```
+
+### Architecture Mapping
+
+| View | Method | Includes retracted content |
+| --- | --- | --- |
+| Audit stream | `read_all()` | yes |
+| Active view | `active_records()` | no |
+
+Left to the reader: add `retracted_records` to `RecallResult` and explain whether that count leaks retracted content; implement a physical purge that erases retracted content while keeping retraction events, and design crash recovery for it.
+
 ## No-Key Composition Boundary
 
 ```text
