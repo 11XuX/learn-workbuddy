@@ -157,6 +157,35 @@ Each item renders as `- <id>: <desc> (status=<s>[; reason=<r>]; source=...; conf
 
 **Architecture mapping**: a summary saying "done" only pollutes the conversation summary; real closure comes from new evidence the harness holds (source pointer + confirmation time), the same owner boundary that guards Memory writes.
 
+### Done Archive: Leaving State Returns an Audit Record
+
+**Problem**: render folding only hides old done items; they still live in `DurableContextState` forever, and simply deleting them would also lose the closing evidence (`source_pointer`).
+
+**Solution**: the harness calls the pure function `archive_done_pending_items(state, *, now, older_than)`, which returns `(new state, audit records)`. Each record is a frozen `ArchivedPendingItem(item, archived_at)` whose `item` keeps the closing `source_pointer` and `last_confirmed_at` unchanged. It is not registered as a model tool, so a summary saying "done" cannot drive archiving.
+
+**How it works**:
+
+```python
+state, records = archive_done_pending_items(
+    state, now=datetime(2026, 10, 9, 10, tzinfo=timezone.utc),  # injected by caller, must be UTC
+    older_than=timedelta(days=7),                                # must be > 0
+)
+```
+
+| Case | Result |
+| --- | --- |
+| `done` and `now - last_confirmed_at >= older_than` | removed from state, added to records in original order |
+| `open` / `blocked`, however old | kept |
+| `last_confirmed_at` later than `now` (clock skew) | not yet due, kept |
+| naive / non-UTC `now`, `older_than <= 0`, wrong types | raises `ValueError`; input state unchanged |
+| nothing due | returns the same state object and `()` |
+
+`last_confirmed_at` may use any offset and is compared as an absolute instant. The function never reads the system clock or writes files, and it is all-or-nothing: it archives the whole batch or raises. Persisting the records is the caller's job.
+
+**Try it**: `/pending-demo` appends `[archive] ...` and `[after-archive] (no pending work)` after the four lifecycle lines.
+
+**Architecture mapping**: leaving the hot path is not losing evidence: a record's pointer goes straight to `resolve_durable_sources()` for verification.
+
 ### Source Pointers Preserve Evidence
 
 ```text
