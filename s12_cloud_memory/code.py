@@ -691,7 +691,12 @@ class RemoteMemoryStore:
         if MemoryKind(kind) is MemoryKind.RETRACTION:
             raise RemoteMemoryValidationError("use retract() to write retractions")
         record = StoredMemory(
-            memory_id=memory_id or uuid.uuid4().hex,
+            memory_id=_require_record_id(
+                uuid.uuid4().hex
+                if memory_id is None or (type(memory_id) is str and memory_id == "")
+                else memory_id,
+                field_name="memory_id",
+            ),
             user_scope=self.user_scope,
             kind=MemoryKind(kind),
             content=_clean_text(
