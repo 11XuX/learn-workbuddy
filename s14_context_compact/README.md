@@ -199,6 +199,35 @@ state = transition_pending_item(
 
 **架构对照**：摘要里的一句“已完成”只污染 conversation summary；真正的结案来自 harness 拿到的新证据（source pointer + 确认时间），这与 Memory 写入必须经过 owner 边界是同一条原则。
 
+### Done 归档：离开 state 时交还审计记录
+
+**问题**：渲染折叠只是不显示，已结案的 done 项仍长期留在 `DurableContextState` 里；直接删掉又会连同结案证据（`source_pointer`）一起丢失。
+
+**解决方案**：harness 调用纯函数 `archive_done_pending_items(state, *, now, older_than)`，返回 `(新 state, 审计记录元组)`。每条审计是冻结的 `ArchivedPendingItem(item, archived_at)`：`item` 原样保留结案时的 `source_pointer` 与 `last_confirmed_at`。它不注册为模型工具，摘要里的一句“已完成”驱动不了归档。
+
+**工作原理**：
+
+```python
+state, records = archive_done_pending_items(
+    state, now=datetime(2026, 10, 9, 10, tzinfo=timezone.utc),  # 调用方注入，必须是 UTC
+    older_than=timedelta(days=7),                                # 必须 > 0
+)
+```
+
+| 情况 | 结果 |
+| --- | --- |
+| `done` 且 `now - last_confirmed_at >= older_than` | 移出 state，按原顺序进入审计记录 |
+| `open` / `blocked`，无论多旧 | 保留 |
+| `last_confirmed_at` 晚于 `now`（时钟偏差） | 视为未到期，保留 |
+| naive / 非 UTC 的 `now`、`older_than <= 0`、类型不对 | 抛 `ValueError`，入参 state 不变 |
+| 没有到期项 | 返回原 state 对象和 `()` |
+
+`last_confirmed_at` 可以是任意偏移，按绝对时刻比较。函数不读系统时钟、不写文件，整批成败：要么全部归档，要么抛错。审计记录的持久化由调用方负责。
+
+**试一下**：`/pending-demo` 在四行生命周期输出之后追加 `[archive] ...` 与 `[after-archive] (no pending work)`。
+
+**架构对照**：离开热路径不等于丢掉证据：审计里的 pointer 可以直接交给 `resolve_durable_sources()` 核验。
+
 ### Source pointer 不是证据本身
 
 本章支持两类无路径标识符：
@@ -523,7 +552,7 @@ python s14_context_compact/code.py
 
 ## 练习
 
-1. 为 done 项设计带审计记录的归档：由 harness 把超过保留期的 done 项移出 `DurableContextState`，并证明归档后仍能用 source_pointer 追溯结案证据。追问：完成状态由谁确认？如果让模型工具也能调用迁移函数，摘要里的一句“已完成”会从哪条路径越权？
+1. 把 `archive_done_pending_items` 返回的审计记录持久化为只追加 JSONL，并证明在“写审计”和“替换 state”之间崩溃时，既不丢项也不重复归档。追问：完成状态与归档由谁确认？如果让模型工具也能调用迁移或归档，摘要里的一句“已完成”会从哪条路径越权？
 2. 当前 Layer 4 的摘要是一次性生成。实现增量摘要：每次只摘要新增的 messages，与之前的摘要合并；然后设计测试证明 durable state 不参与摘要合并。
 3. 为远端 object store 实现 resolver adapter，保持同一五态输出和前置授权契约。设计测试证明重定向、过期签名与跨租户 key 不能越过 owner 边界。
 4. `estimate_tokens` 用 4 字符 ≈ 1 token 估算。安装 tokenizer 做精确计数，对比中英文和结构化 tool result 的偏差。

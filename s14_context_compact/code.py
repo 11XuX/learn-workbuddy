@@ -54,7 +54,7 @@ import sys
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 
@@ -789,6 +789,54 @@ def transition_pending_item(
         state,
         pending_items=tuple(updated if i is item else i for i in state.pending_items),
     )
+
+
+@dataclass(frozen=True)
+class ArchivedPendingItem:
+    """审计记录：被移出 state 的原 done 项 + 归档时刻。"""
+
+    item: PendingItem
+    archived_at: str
+
+    def __post_init__(self) -> None:
+        if type(self.item) is not PendingItem or self.item.status != PendingStatus.DONE.value:
+            raise ValueError("item must be a done PendingItem")
+        if type(self.archived_at) is not str:
+            raise ValueError("archived_at must be a plain str")
+        object.__setattr__(
+            self, "archived_at", _zoned_timestamp(self.archived_at, field_name="archived_at"))
+
+
+def archive_done_pending_items(
+    state: DurableContextState,
+    *,
+    now: datetime,
+    older_than: timedelta,
+) -> tuple[DurableContextState, tuple[ArchivedPendingItem, ...]]:
+    """只由 harness 调用；纯函数，整批成败，入参 state 不变。"""
+
+    # 先校验参数：只收精确类型，now 必须是 UTC
+    if type(state) is not DurableContextState:
+        raise ValueError("state must be a DurableContextState")
+    if type(now) is not datetime or now.tzinfo is None or now.utcoffset() != timedelta(0):
+        raise ValueError("now must be a timezone-aware UTC datetime")
+    if type(older_than) is not timedelta or older_than <= timedelta(0):
+        raise ValueError("older_than must be a positive timedelta")
+    archived_at = now.isoformat()
+    expired = []
+    for item in state.pending_items:
+        if item.status != PendingStatus.DONE.value:
+            continue  # open / blocked 无论多旧都不动
+        confirmed = datetime.fromisoformat(item.last_confirmed_at.replace("Z", "+00:00"))
+        # 按绝对时刻比较；晚于 now（时钟偏差）的项 age 为负，自然保留
+        if now - confirmed >= older_than:
+            expired.append(item)
+    if not expired:
+        return state, ()
+    records = tuple(ArchivedPendingItem(item, archived_at) for item in expired)
+    gone = {id(item) for item in expired}
+    kept = tuple(i for i in state.pending_items if id(i) not in gone)
+    return replace(state, pending_items=kept), records
 
 
 def resolve_durable_sources(
@@ -1601,6 +1649,14 @@ if __name__ == "__main__":
                     demo, "ship-docs", "open", last_confirmed_at="2026-10-01T11:00:00+00:00")
             except ValueError:
                 print("[harness] ship-docs: done -> open rejected")
+            # 归档：离开 state 时交还审计记录
+            demo, records = archive_done_pending_items(
+                demo, now=datetime(2026, 10, 9, 10, tzinfo=timezone.utc),
+                older_than=timedelta(days=7))
+            for rec in records:
+                print(f"[archive] {rec.item.item_id} archived_at={rec.archived_at} "
+                      f"source={rec.item.source_pointer}")
+            print("[after-archive] " + (render_durable_context(demo) or "(no pending work)"))
             continue
 
         if query.strip().lower() == "stats":
