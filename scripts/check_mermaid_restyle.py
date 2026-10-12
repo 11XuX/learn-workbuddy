@@ -56,8 +56,8 @@ def extract_blocks(text: str) -> list[list[str]]:
 def statements(lines: list[str]) -> list[str]:
     out = []
     for line in lines:
+        _check(not re.search(r"%%\s*\{", line), f"禁止的主题覆盖: {line.strip()}")  # Mermaid 不要求 %%{ 在行首
         if line.strip().startswith("%%"):
-            _check(not line.strip().startswith("%%{"), f"禁止的主题覆盖: {line.strip()}")
             continue
         parts, cur, quoted = [], "", False
         for ch in line:
