@@ -16,7 +16,17 @@
 - 保留原块的方向（目前各章均为 `flowchart LR`），不改成 `TD`。
 - subgraph 内不写 `direction`。
 
-## 3. subgraph 分层词表
+## 3. 通用规则（所有章节适用）
+
+1. **必选**：每张图都要用 `classDef` 配色分层（调色板见第 5 节），每个节点都归入一个类。
+2. **可选**：subgraph 只在不造成边文字重叠、布局不变差时才用；渲染后出现重叠就不加，只靠 `classDef` 分层。
+3. **固定词**：用了 subgraph 时，id 与标题只能取第 4 节词表，词表外即失败（对比脚本已校验）。
+4. 只有两个及以上节点同属一层时才建 subgraph。
+
+本试点的落地：s01 不加 subgraph（加了以后两条分支边文字重叠），只用 `classDef`；
+s02 加一个 `dispatch` 组，标题「分发与校验」/「Dispatch and Validation」在第 4 节词表内。
+
+## 4. subgraph 固定词表
 
 subgraph 的 id 与标题只能取自下表（中文 README 用中文标题，英文 README 用英文标题）：
 
@@ -29,10 +39,7 @@ subgraph 的 id 与标题只能取自下表（中文 README 用中文标题，�
 | `memory` | 记忆与状态 | Memory and State |
 | `output` | 输出 | Output |
 
-只有两个及以上节点同属一层时才建 subgraph；单节点用 `class` 着色即可。
-若加 subgraph 后渲染出现边文字重叠或布局明显变差，就不加，只用 `class` 着色（如 s01）。
-
-## 4. classDef 调色板
+## 5. classDef 调色板
 
 浅底 + 深色描边 + 显式深色文字，GitHub light / dark 主题下都可读：
 
@@ -48,12 +55,12 @@ classDef error fill:#fee2e2,stroke:#b91c1c,color:#450a0a
   `error`：错误结果。只写本块用到的 `classDef`。
 - `classDef` 与 `class` 行放在块末尾，subgraph 放在边之后。
 
-## 5. 禁止
+## 6. 禁止
 
 - `click`、HTML 标签、图标（`fa:` 等）、`:::` 简写、`%%{init}%%` 主题覆盖、`style` 单点样式。
 - 外部 SVG / mermaid 片段的复制。
 
-## 6. 本地渲染核对（可选）
+## 7. 本地渲染核对（可选）
 
 可用本机已有的 mermaid-cli 渲染 default 与 dark 两套主题核对可读性；
 渲染工具不加入项目依赖，渲染产物不提交。
