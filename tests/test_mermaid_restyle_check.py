@@ -65,3 +65,46 @@ def test_extract_blocks_rejects_unclosed_fence():
     assert mod.extract_blocks("x\n```mermaid\nflowchart LR\n```\n") == [["flowchart LR"]]
     with pytest.raises(mod.RestyleError):
         mod.extract_blocks("```mermaid\nflowchart LR\n")
+
+
+CORE = "classDef core fill:#ede9fe"
+
+
+def test_semicolons_split_statements_outside_quotes_only():
+    base = BASE + '\n    E -->|"a;b"| F["x; y"]'
+    assert ("F", "x; y") in mod.parse(lines(base))["nodes"]
+    assert mod.compare(lines(base), lines(base + f"\n    {CORE}; class B core")) == []
+    with pytest.raises(mod.RestyleError):
+        mod.compare(lines(base), lines(base + f"\n    {CORE}; A --> E"))  # 分号夹带边
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        f"{CORE} extra",  # 行尾内容
+        f"{CORE},stroke:#fff;",  # 非法属性值
+        "class B core x",
+        'subgraph loop["Agent Loop"] B\n    end',
+        "classDef  core fill:#ede9fe",  # 关键字间多余空格
+        "ClassDef core fill:#ede9fe",  # 大小写
+        'Subgraph loop["Agent Loop"]\n    B\n    end',
+        'subgraph loop["Agent Loop"]\n    B\n    END',
+        'subgraph loop["Agent Loop"]\n    End\n    end',  # 关键字当 id
+        'subgraph loop["Agent Loop"]\n    end',  # 空 subgraph
+        'subgraph loop["Agent Loop"]\n    B',  # 未闭合 subgraph
+        'subgraph loop["Agent Loop"]\n    subgraph tools["Tool Execution"]\n    C\n    end\n    end',  # 嵌套
+        'A["Prompt\n    "]',  # 引号未闭合
+        "Flowchart LR",
+        f"{CORE}\n    class B core\n    class B core",  # 重复 class
+    ],
+)
+def test_whitelist_rejects_leftovers_case_and_structure(extra):
+    with pytest.raises(mod.RestyleError):
+        mod.compare(lines(BASE), lines(BASE + "\n    " + extra))
+
+
+def test_indentation_and_comments_are_presentation():
+    new = "\n".join("  " + ln for ln in lines(BASE)) + "\n    %% 样式\n    " + CORE + "\n    class B core"
+    assert mod.compare(lines(BASE), lines(new)) == []
+    with pytest.raises(mod.RestyleError):
+        mod.compare(lines(BASE), lines(BASE + '\n    %%{init: {"theme": "dark"}}%%'))
