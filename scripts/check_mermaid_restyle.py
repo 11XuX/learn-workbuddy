@@ -26,7 +26,7 @@ FORMS = {
     "end": re.compile(r"end"),
     "member": re.compile(rf"({ID})"),
 }
-COLOR = re.compile(r"#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})")
+COLOR = re.compile(r"#[0-9a-fA-F]{6}")
 PROPS = {"fill": COLOR, "stroke": COLOR, "color": COLOR, "stroke-width": re.compile(r"[1-9][0-9]*px")}
 BAD_TEXT = re.compile(r"<[A-Za-z/!]|\bfa[bsr]?:|[\[\]|]")
 

@@ -32,7 +32,7 @@ def lines(text):
 CORE = "classDef core fill:#ede9fe"
 EXTRA = [  # 追加到 BASE 末尾的行
     f"{CORE} extra",  # 行尾内容
-    f"{CORE},stroke:#ffff;",  # 非法属性值（#rgb 现为合法，改用 4 位）
+    f"{CORE},stroke:#fff;",  # 非法属性值
     "class B core x",
     'subgraph loop["Agent Loop"] B\n    end',
     "classDef  core fill:#ede9fe",  # 关键字间多余空格

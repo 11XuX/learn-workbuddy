@@ -41,7 +41,7 @@ subgraph 的 id 与标题只能取自下表（中文 README 用中文标题，�
 
 ## 5. classDef 调色板
 
-浅底 + 深色描边 + 显式深色文字，GitHub light / dark 主题下都可读。属性只允许 `fill`/`stroke`/`color`（`#rgb` 或 `#rrggbb`）
+浅底 + 深色描边 + 显式深色文字，GitHub light / dark 主题下都可读。属性只允许 `fill`/`stroke`/`color`（只收 6 位 `#rrggbb`）
 与 `stroke-width`（正整数 + `px`），逗号分隔、不重复、无空格：
 
 ```text
