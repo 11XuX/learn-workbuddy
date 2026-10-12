@@ -29,7 +29,7 @@ def blocks(lines):  # fences nest per CommonMark; a block with an odd quote coun
         elif m and not fence:  # only a top-level "```mermaid" opens a diagram
             fence, cur, _ = m[1], len(ids) if body == "```mermaid" else None, (ids.append(set()), toks.append(set()))
         elif cur is not None:
-            _ = blk.append(cur), (body.count('"') % 2 or body.count("'") % 2) and bad.add(cur)  # multi-line label
+            _ = blk.append(cur), (body.count('"') % 2 or body.count("'") % 2 or re.search(r"(?i);|\S.*\b(subgraph|end)\b", body)) and bad.add(cur)  # ;/mid-line end
             ids[cur] |= set(NODE.match(body).groups() if NODE.match(body) else ())  # one per line
             toks[cur] |= set(re.findall(r"\w+", re.sub(r'"[^"]*"', " ", body)))
             continue

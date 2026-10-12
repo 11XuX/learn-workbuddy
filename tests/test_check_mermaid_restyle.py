@@ -80,8 +80,8 @@ Y = next(x for x in S10.splitlines(True) if "D -- yes --> P" in x)
     (B2, B2.replace("S\n", "S\n  subgraph Output\n").replace('d"]\n', 'd"]\n  end\n')),
     (B2, B2.replace("  subgraph S", "  subgraph Output\n  subgraph S").replace("end\n", "end\nend\n")),
     *[(S10, S10.replace(Y, Y + x + Y[len(Y.rstrip()):])) for x in ("    yes", "    no", "    class yes,no hot")],
-    *[(c, c.replace("\n```\n", f"\nclass {x} k\n```\n")) for c in (C1, C2) for x in "Bx"],
-    *[(b, b.replace("A[a]\n", "subgraph Output\nA[a]\n").replace(e, e + "end\n")) for e in ("\tEnd \n", "END;\n", "end %%x\n")
+    *[(c, c.replace("\n```\n", f"\nclass {x} k\n```\n")) for c in (C1, C2) for x in "Bx"], *[(b, b.replace("B[b]\n", "subgraph Output\nB[b]\n").replace("D[d]\n", "D[d]\nend\n")) for b in (
+        "```mermaid\nA[a]; subgraph S\nB[b]\nC[c]; end\nD[d]\n```\n", "```mermaid\nA[a] & subgraph S\nB[b]\nC[c] %% end\nD[d]\n```\n")], *[(b, b.replace("A[a]\n", "subgraph Output\nA[a]\n").replace(e, e + "end\n")) for e in ("\tEnd \n", "END;\n", "end %%x\n")
       for b in [f"```mermaid\nsubgraph\tS\nA[a]\n{e}```\n"]], *[(b, b.replace("\n```\n", "\nclassDef k fill:#fff\nclass G k\n```\n", 1)) for b in (
         '```mermaid\nA["l\nG[x]\n"]\n```\n', "```mermaid\nA['l\nG[x]\n']\n```\n", "~~~\n```mermaid\nG[x]\n```\n~~~\n", "  ````\n```mermaid\nG[x]\n```\n````\n")],
 ])
