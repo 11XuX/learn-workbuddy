@@ -82,3 +82,22 @@ def test_toolsearch_non_list_tool_names_returns_error_not_typeerror(s17, tool_na
         assert "mcp__github__list_issues" in output or "tool_names" in output.lower()
     else:
         assert "error" in output.lower() or "tool_names" in output.lower()
+
+
+def test_toolsearch_list_tool_names_still_loads_schema_control(s17):
+    """Control: a proper list keeps working (passes on main and after fix)."""
+    agent = _agent(s17)
+    block = SimpleNamespace(
+        name="ToolSearch",
+        input={"tool_names": ["mcp__github__list_issues"]},
+    )
+    output = agent.handle_tool_call(block)
+    assert '"input_schema"' in output
+    assert "permission_denied" not in output
+
+
+def test_toolsearch_missing_tool_names_does_not_raise_control(s17):
+    """Control: an absent key already defaults to [] and must not raise."""
+    agent = _agent(s17)
+    output = agent.handle_tool_call(SimpleNamespace(name="ToolSearch", input={}))
+    assert isinstance(output, str)
