@@ -509,6 +509,8 @@ If no connectors are connected, tell the user to trust connectors first.
 
         elif name == "ToolSearch":
             tool_names = params.get("tool_names", [])
+            if not isinstance(tool_names, list):
+                return "Error: tool_names must be an array of tool name strings."
             results = []
             for tn in tool_names:
                 schema = self.manager.tool_search(tn)

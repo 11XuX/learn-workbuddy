@@ -101,3 +101,93 @@ def test_toolsearch_missing_tool_names_does_not_raise_control(s17):
     agent = _agent(s17)
     output = agent.handle_tool_call(SimpleNamespace(name="ToolSearch", input={}))
     assert isinstance(output, str)
+
+
+TOOL_NAMES_ERROR = "Error: tool_names must be an array of tool name strings."
+
+
+@pytest.mark.parametrize(
+    "tool_names",
+    [
+        None,
+        0,
+        1.5,
+        True,
+        "",
+        "mcp__github__list_issues",
+        ("mcp__github__list_issues",),
+        {"mcp__github__list_issues": 1},
+        {"mcp__github__list_issues"},
+        frozenset({"mcp__github__list_issues"}),
+        b"mcp__github__list_issues",
+    ],
+)
+def test_toolsearch_non_list_edge_cases_return_exact_error(s17, tool_names):
+    """Every non-list shape fails closed with the same readable error, no coercion."""
+    agent = _agent(s17)
+    output = agent.handle_tool_call(
+        SimpleNamespace(name="ToolSearch", input={"tool_names": tool_names})
+    )
+    assert output == TOOL_NAMES_ERROR
+
+
+def test_toolsearch_empty_list_returns_empty_results(s17):
+    agent = _agent(s17)
+    output = agent.handle_tool_call(
+        SimpleNamespace(name="ToolSearch", input={"tool_names": []})
+    )
+    assert output.strip() == "[]"
+
+
+def test_toolsearch_list_subclass_is_accepted(s17):
+    class NameList(list):
+        pass
+
+    agent = _agent(s17)
+    output = agent.handle_tool_call(
+        SimpleNamespace(
+            name="ToolSearch",
+            input={"tool_names": NameList(["mcp__github__list_issues"])},
+        )
+    )
+    assert '"input_schema"' in output
+
+
+def test_toolsearch_str_subclass_element_is_accepted(s17):
+    class Name(str):
+        pass
+
+    agent = _agent(s17)
+    output = agent.handle_tool_call(
+        SimpleNamespace(
+            name="ToolSearch",
+            input={"tool_names": [Name("mcp__github__list_issues")]},
+        )
+    )
+    assert '"input_schema"' in output
+
+
+def test_toolsearch_hashable_non_str_element_out_of_scope_does_not_raise(s17):
+    """Element-level validation is out of scope for #22; hashable junk must not raise."""
+    agent = _agent(s17)
+    output = agent.handle_tool_call(
+        SimpleNamespace(name="ToolSearch", input={"tool_names": [1, None]})
+    )
+    assert isinstance(output, str)
+    assert output != TOOL_NAMES_ERROR
+
+
+def test_toolsearch_error_does_not_abort_run_loop(s17):
+    """The error string is returned as a tool_result, so MCPAgent.run keeps going."""
+    agent = _agent(s17)
+    for bad in (None, 1, "x"):
+        out = agent.handle_tool_call(
+            SimpleNamespace(name="ToolSearch", input={"tool_names": bad})
+        )
+        assert out == TOOL_NAMES_ERROR
+    ok = agent.handle_tool_call(
+        SimpleNamespace(
+            name="ToolSearch", input={"tool_names": ["mcp__github__list_issues"]}
+        )
+    )
+    assert '"input_schema"' in ok
