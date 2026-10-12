@@ -2,9 +2,9 @@
 
 [返回首页](../../README.md)
 
-> 结论先行：Memory “能写、能搜”还不够。并发重试、身份冲突、跨用户读取、损坏持久层和进程重启都必须得到可重复、可解释的结果。
+> 结论先行：Memory “能写、能搜”还不够。并发重试、身份冲突、跨用户读取、损坏持久层、进程重启和撤回后的遗忘都必须得到可重复、可解释的结果。
 
-本示例完全离线地运行五个 Memory contract gate，并输出结构化 scorecard。它直接加载 [S12 Cloud Memory](../../s12_cloud_memory/) 的 `RemoteMemoryStore` 与 `RecallEngine`，不新增第二套 Memory 核心，也不调用模型或网络。
+本示例完全离线地运行六个 Memory contract gate，并输出结构化 scorecard。它直接加载 [S12 Cloud Memory](../../s12_cloud_memory/) 的 `RemoteMemoryStore` 与 `RecallEngine`，不新增第二套 Memory 核心，也不调用模型或网络。
 
 ## 代码架构图
 
@@ -15,6 +15,8 @@ flowchart LR
     I --> R["S12 RecallEngine"]
     S --> F["Atomic / Scope / Corruption Gates"]
     R --> P["Restart + Provenance Replay"]
+    R --> X["Retract + Rebuild Gate"]
+    X --> O
     F --> O["Case Observation + Evidence"]
     P --> O
     O --> J["memory-resilience-report.json"]
@@ -29,7 +31,7 @@ flowchart LR
 
 它也不同于普通单元测试。测试负责保护实现；这个可运行示例给读者一份稳定的教学入口和 JSON 报告，可以直接观察每条契约的期望、实际结果和证据。
 
-## 五个故障场景
+## 六个故障场景
 
 | Case | 注入方式 | 必须成立的不变量 |
 |---|---|---|
@@ -38,8 +40,11 @@ flowchart LR
 | `scope_isolation` | Bob 用 Alice 的物理存储路径读取 | 抛出 `RemoteMemoryScopeError`，不能泄漏记录 |
 | `corrupt_store` | 在合法 JSONL 后追加 torn record | 抛出 `RemoteMemoryCorruptionError`，不能静默跳过 |
 | `restart_recall` | 丢弃 store/engine 对象后重新构造 | 排名、Memory ID、provenance 一致，Recall 不改写 durable store |
+| `retract_survives_restart` | 两条相近记录先被同一查询同时命中，撤回其一（重复撤回一次），再重建 store/engine | Recall 与 `active_records()` 不含目标，另一条仍命中；重复撤回返回同一撤回 ID；`read_all()` 保留原记录 ID 与 `retracts` 指向它的撤回事件；文件字节不变 |
 
 这里的 “winner” 只是原子追加成功的那条 immutable record，不代表 duplicate writer 获得新的写权限。生产服务通常用唯一索引或 conditional write 提供同类边界；本地教学实现使用相邻 lock file 和 append-only JSONL。
+
+`restart_recall` 与 `retract_survives_restart` 的“重启”都是在同一进程内丢弃并重建 store/engine 对象，只证明状态全部来自 durable 文件；它不等于真实进程重启，也不覆盖崩溃恢复。S12 自身的单元测试已覆盖撤回与重复撤回；这一门把同一契约放进 scorecard，并额外要求撤回前两条记录确实都能被查询命中，避免“本来就召不回”造成假通过。
 
 ## 主要代码流程
 
@@ -72,7 +77,7 @@ python3 examples/memory_resilience_eval/code.py \
 
 - `contract`：这个场景必须保护的边界；
 - `observed`：实际发生的明确状态，而不是一段模糊日志；
-- `evidence`：winner 数量、异常类型、Memory/Source ID、重启前后稳定性等可检查字段；
+- `evidence`：winner 数量、异常类型、Memory/Source ID、重启前后稳定性、撤回 ID 与有效视图等可检查字段；
 - `passed`：单条二元 gate。
 
 这是一套确定性的存储与 Harness contract eval，不是模型质量、召回语义质量或吞吐量 benchmark。线程数量用于稳定触发竞争边界，不能解读为性能数据。

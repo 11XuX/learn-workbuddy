@@ -399,6 +399,84 @@ def _restart_recall(chapter: ModuleType, case_dir: Path) -> CaseObservation:
     )
 
 
+def _retract_survives_restart(
+    chapter: ModuleType, case_dir: Path
+) -> CaseObservation:
+    """Retract one of two matching records, rebuild objects, require it stays gone."""
+
+    path = case_dir / "retract.jsonl"
+    store = chapter.RemoteMemoryStore(path, user_id="alice")
+    for memory_id, detail in (
+        ("mem-deploy-old", "skips the staging smoke test"),
+        ("mem-deploy-new", "runs the staging smoke test"),
+    ):
+        _append(
+            chapter,
+            store,
+            memory_id=memory_id,
+            content=f"Deployment checklist {detail} before publish.",
+            source_id=f"src-{memory_id}",
+            title="Deployment checklist",
+        )
+    query = "What does the deployment checklist say about the staging smoke test?"
+
+    def recall_ids(target_store) -> list[str]:
+        result = chapter.RecallEngine(target_store).recall(
+            query, limit=5, query_id="query-retract", as_of=RECALL_AS_OF
+        )
+        return [hit.memory_id for hit in result.hits]
+
+    # Without this precondition a query that never matched the target would
+    # make "not recalled after retraction" pass for the wrong reason.
+    before_ids = recall_ids(store)
+    both_matched = {"mem-deploy-old", "mem-deploy-new"} <= set(before_ids)
+    source = _source(chapter, "src-retract", "Checklist correction")
+    first = store.retract("mem-deploy-old", reason="Superseded.", source=source)
+    second = store.retract("mem-deploy-old", reason="Superseded.", source=source)
+    retraction_ids = [first.memory_id, second.memory_id]
+    before_digest = hashlib.sha256(path.read_bytes()).hexdigest()
+
+    # Rebuilding objects simulates a restart inside one process; it is not a
+    # real process restart.
+    restarted = chapter.RemoteMemoryStore(path, user_id="alice")
+    hit_ids = recall_ids(restarted)
+    active_ids = [record.memory_id for record in restarted.active_records()]
+    durable = restarted.read_all()
+    after_digest = hashlib.sha256(path.read_bytes()).hexdigest()
+
+    events = [r for r in durable if r.kind is chapter.MemoryKind.RETRACTION]
+    audit_kept = (
+        [r.memory_id for r in durable if r.kind is not chapter.MemoryKind.RETRACTION]
+        == ["mem-deploy-old", "mem-deploy-new"]
+        and [(r.memory_id, r.retracts) for r in events]
+        == [(first.memory_id, "mem-deploy-old")]
+    )
+    store_unchanged = before_digest == after_digest
+    passed = (
+        both_matched
+        and retraction_ids[0] == retraction_ids[1]
+        and "mem-deploy-old" not in hit_ids
+        and "mem-deploy-new" in hit_ids
+        and active_ids == ["mem-deploy-new"]
+        and audit_kept
+        and store_unchanged
+    )
+    return CaseObservation(
+        passed=passed,
+        observed="retraction_durable" if passed else "retraction_leaked",
+        evidence={
+            "pre_retract_hit_ids": before_ids,
+            "hit_ids": hit_ids,
+            "active_ids": active_ids,
+            "retraction_ids": retraction_ids,
+            "retracts": [r.retracts for r in events],
+            "audit_kept": audit_kept,
+            "store_unchanged": store_unchanged,
+            "durable_records": len(durable),
+        },
+    )
+
+
 DEFAULT_CASES = (
     CaseDefinition(
         case_id="concurrent_duplicate_write",
@@ -424,6 +502,11 @@ DEFAULT_CASES = (
         case_id="restart_recall",
         contract="Recall stays deterministic, source-bearing, and non-mutating after restart.",
         runner=_restart_recall,
+    ),
+    CaseDefinition(
+        case_id="retract_survives_restart",
+        contract="A retracted memory stays out of recall and the active view after rebuild, with audit evidence intact.",
+        runner=_retract_survives_restart,
     ),
 )
 

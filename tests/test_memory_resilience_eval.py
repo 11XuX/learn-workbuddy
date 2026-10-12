@@ -30,7 +30,7 @@ def test_scorecard_exercises_every_memory_failure_boundary(tmp_path: Path) -> No
     report = module.run_evaluation(tmp_path)
 
     assert report.passed is True
-    assert report.summary == {"total": 5, "passed": 5, "failed": 0}
+    assert report.summary == {"total": 6, "passed": 6, "failed": 0}
     results = {result.case_id: result for result in report.cases}
     assert set(results) == {
         "concurrent_duplicate_write",
@@ -38,6 +38,7 @@ def test_scorecard_exercises_every_memory_failure_boundary(tmp_path: Path) -> No
         "scope_isolation",
         "corrupt_store",
         "restart_recall",
+        "retract_survives_restart",
     }
     assert results["concurrent_duplicate_write"].evidence["durable_records"] == 1
     assert results["concurrent_duplicate_write"].evidence["created"] == 1
@@ -52,6 +53,14 @@ def test_scorecard_exercises_every_memory_failure_boundary(tmp_path: Path) -> No
     )
     assert results["restart_recall"].evidence["store_unchanged"] is True
     assert results["restart_recall"].evidence["provenance_preserved"] is True
+    retract = results["retract_survives_restart"].evidence
+    assert {"mem-deploy-old", "mem-deploy-new"} <= set(retract["pre_retract_hit_ids"])
+    assert "mem-deploy-old" not in retract["hit_ids"]
+    assert retract["active_ids"] == ["mem-deploy-new"]
+    assert retract["retraction_ids"][0] == retract["retraction_ids"][1]
+    assert retract["retracts"] == ["mem-deploy-old"]
+    assert retract["store_unchanged"] is True
+    assert retract["durable_records"] == 3
 
     payload = json.loads(
         (tmp_path / "memory-resilience-report.json").read_text(encoding="utf-8")
@@ -86,6 +95,45 @@ def test_unexpected_case_error_is_reported_without_aborting(tmp_path: Path) -> N
     }
 
 
+def _retract_case(module):
+    return tuple(
+        case for case in module.DEFAULT_CASES if case.case_id == "retract_survives_restart"
+    )
+
+
+def test_retract_gate_fails_when_retraction_is_a_no_op(tmp_path: Path, monkeypatch) -> None:
+    module = load_module()
+    chapter = module.load_memory_chapter()
+
+    def no_op_retract(self, target_id, **_kwargs):
+        return next(r for r in self.read_all() if r.memory_id == target_id)
+
+    monkeypatch.setattr(chapter.RemoteMemoryStore, "retract", no_op_retract)
+    report = module.evaluate_cases(chapter, tmp_path, cases=_retract_case(module))
+
+    assert report.passed is False
+    assert report.cases[0].observed == "retraction_leaked"
+    assert "mem-deploy-old" in report.cases[0].evidence["hit_ids"]
+
+
+def test_retract_gate_fails_when_active_view_keeps_target(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = load_module()
+    chapter = module.load_memory_chapter()
+    monkeypatch.setattr(
+        chapter.RemoteMemoryStore,
+        "active_records",
+        lambda self: [
+            r for r in self.read_all() if r.kind is not chapter.MemoryKind.RETRACTION
+        ],
+    )
+    report = module.evaluate_cases(chapter, tmp_path, cases=_retract_case(module))
+
+    assert report.passed is False
+    assert "mem-deploy-old" in report.cases[0].evidence["active_ids"]
+
+
 def test_cli_is_keyless_and_writes_the_report(tmp_path: Path) -> None:
     output_dir = tmp_path / "cli-output"
     env = os.environ.copy()
@@ -110,6 +158,6 @@ def test_cli_is_keyless_and_writes_the_report(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "Memory resilience evaluation" in result.stdout
-    assert "Passed: 5/5" in result.stdout
+    assert "Passed: 6/6" in result.stdout
     assert "RESULT: OK" in result.stdout
     assert (output_dir / "memory-resilience-report.json").exists()
