@@ -411,7 +411,7 @@ s09 transcript 可以成为 s12 StoredMemory 的 source，但“有 transcript�
 - 公开 `append()` 拒绝 `RETRACTION`；撤回未知 id 或撤回一条撤回都会被拒绝，文件不变；
 - `active_records()` 按原始 JSON 类型校验磁盘上的撤回记录，不合法即 `RemoteMemoryCorruptionError`。
 
-已知限制：非撤回记录的 `append()` 仍接受 `int`、`str` 子类与空串 id（空串换成 uuid）；首尾带空白或超过 200 字符的旧记录无法撤回，`retract()` 会明确报错。
+已知限制：`append()` 只接受内建 `str` id（`PR 44` 起），空串仍换成 uuid；首尾带空白或超过 200 字符的旧记录无法撤回，`retract()` 会明确报错。
 
 ### 试一下
 
@@ -429,6 +429,50 @@ assert "conv-1" not in {r.memory_id for r in store.active_records()}
 | 有效视图 | `active_records()` | 否 |
 
 留给读者：为 `RecallResult` 增加 `retracted_records`，并说明这个数字会不会泄露被撤回的内容；实现物理 purge，在保留撤回事件的前提下抹掉被撤回内容，并设计崩溃中断后的恢复。
+
+## Agent 工具入口：retract_memory
+
+### 问题
+
+上面的 `retract()` 只在库层可用。用户在对话里说「忘掉那段」时，模型没有工具可调，只能口头答应。
+
+### 解决方案
+
+新增工具 `retract_memory(memory_id, reason)`，注册进 `TOOLS` 与 `TOOL_HANDLERS`，handler 直接调用 `store.retract()`。`source` 由 harness 填（`source_type="model_tool"`，与 s11 同名），模型不能传。
+
+| | s11 `forget_user_preference` | s12 `retract_memory` |
+| --- | --- | --- |
+| 标识 | 偏好 key | 精确 `memory_id` |
+| 原文 | 写墓碑，不再保留值 | 留在 `read_all()` 审计流 |
+| 重放 | 只能看到「已删除」 | 能看到原记录和撤回事件 |
+
+### 工作原理
+
+- `dispatch_tool()` 先按 schema 检查参数：缺参、多参、类型不对都返回 `{"ok": false, "error": ...}`，不会在 `handler(**input)` 处抛 `TypeError`；
+- `retract()` 抛出的校验错误（未知 id、撤回一条撤回、空 reason、非 `str` id）同样转成 `ok=false`，文件不变；
+- 成功返回 `{"ok": true, "memory_id", "retracts", "reason"}`；重复撤回返回已有撤回事件，`reason` 是第一次记录的理由；
+- 「仅在用户本轮明确要求时调用」「不猜 id」只是系统提示里的约定，harness 不强制；harness 只检查 `retract()` 本身的校验。
+
+`default_runtime()` 每次调用都重建系统提示，撤回 profile 后下一轮提示即反映。
+
+### 试一下
+
+```python
+print(dispatch_tool("retract_memory", {"memory_id": "conversation-001", "reason": "用户要求忘掉"}))
+print(dispatch_tool("retract_memory", {"memory_id": "conversation-001"}))  # ok=false
+```
+
+### 架构对照
+
+```mermaid
+flowchart LR
+    M[模型 tool_use] --> D[dispatch_tool 参数检查]
+    D -->|不合法| E[ok=false]
+    D --> H[retract_memory]
+    H --> R[store.retract]
+    R -->|校验失败| E
+    R --> A[撤回事件追加到 JSONL]
+```
 
 ## 无 key 组合边界
 

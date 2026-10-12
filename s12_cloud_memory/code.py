@@ -956,6 +956,9 @@ Remote memory rules:
 - The recall query must be self-contained because retrieval cannot see this chat.
 - Recall hits are candidates for this query. Check source and score before using them.
 - Do not write recall hits back as new memory merely because they were retrieved.
+- Call retract_memory only when the user explicitly asks this turn to forget a remote record.
+- Pass the exact memory_id from a recall hit or from the user; never guess or rebuild one.
+- Retraction appends an audit event; it does not edit or rewrite the original record.
 
 s10 workspace memory and s11 explicit user memory remain separate ownership layers."""
 
@@ -1079,6 +1082,39 @@ def recall_history(query: str, limit: int = 5) -> str:
     return json.dumps(result.to_dict(), ensure_ascii=False, indent=2)
 
 
+def retract_memory(memory_id: str, reason: str) -> str:
+    """Tool adapter: append a retraction; contract errors become ok=false results.
+
+    "Only on explicit user request" and "do not guess ids" are prompt rules.
+    The harness checks only what retract() checks: the exact str id exists and
+    is not itself a retraction.  source is filled here; the model cannot set it.
+    """
+
+    store, _recall, _system = default_runtime()
+    source = MemorySource(
+        source_id=f"model-tool-{uuid.uuid4().hex[:12]}",
+        source_type="model_tool",
+        title="retract_memory tool call",
+        captured_at=_iso(),
+    )
+    try:
+        if type(reason) is not str:
+            raise RemoteMemoryValidationError("reason must be a built-in str")
+        record = store.retract(memory_id, reason=reason, source=source)
+    except RemoteMemoryError as exc:
+        return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
+    # A repeated retraction returns the stored event, so reason is the original one.
+    return json.dumps(
+        {
+            "ok": True,
+            "memory_id": record.memory_id,
+            "retracts": record.retracts,
+            "reason": record.content,
+        },
+        ensure_ascii=False,
+    )
+
+
 def safe_path(value: str) -> Path:
     path = (WORKDIR / value).resolve()
     if not path.is_relative_to(WORKDIR):
@@ -1139,6 +1175,22 @@ TOOLS = [
         },
     },
     {
+        "name": "retract_memory",
+        "description": (
+            "Append a retraction event for one remote memory record so recall stops "
+            "returning it. The original stays in the audit stream. Use only the exact "
+            "memory_id from a recall hit or given by the user."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "memory_id": {"type": "string", "description": "Exact record id."},
+                "reason": {"type": "string", "description": "Why the user wants it forgotten."},
+            },
+            "required": ["memory_id", "reason"],
+        },
+    },
+    {
         "name": "bash",
         "description": "Run a shell command in the current workspace.",
         "input_schema": {
@@ -1163,7 +1215,39 @@ TOOL_HANDLERS = {
     "recall_history": recall_history,
     "bash": run_bash,
     "read_file": run_read,
+    "retract_memory": retract_memory,
 }
+
+_SCHEMA_TYPES = {"string": str, "integer": int}
+
+
+def dispatch_tool(name: str, tool_input: object) -> str:
+    """Check arguments against the tool schema before calling the handler.
+
+    Missing, extra, or wrongly typed arguments return an ok=false result
+    instead of raising TypeError inside the agent loop.
+    """
+
+    handler = TOOL_HANDLERS.get(name)
+    schema = next((t["input_schema"] for t in TOOLS if t["name"] == name), None)
+    if handler is None or schema is None:
+        return f"Unknown tool: {name}"
+    error = None
+    if not isinstance(tool_input, dict):
+        error = "tool input must be an object"
+    else:
+        props = schema["properties"]
+        extra = sorted(set(tool_input) - set(props))
+        missing = [k for k in schema.get("required", []) if k not in tool_input]
+        wrong = [
+            k for k, v in tool_input.items()
+            if k in props and type(v) is not _SCHEMA_TYPES[props[k]["type"]]
+        ]
+        if extra or missing or wrong:
+            error = f"bad arguments: extra={extra} missing={missing} wrong_type={wrong}"
+    if error:
+        return json.dumps({"ok": False, "error": error}, ensure_ascii=False)
+    return handler(**tool_input)
 
 
 def agent_loop(messages: list[dict]) -> None:
@@ -1187,8 +1271,7 @@ def agent_loop(messages: list[dict]) -> None:
         for block in response.content:
             if block.type != "tool_use":
                 continue
-            handler = TOOL_HANDLERS.get(block.name)
-            output = handler(**block.input) if handler else f"Unknown tool: {block.name}"
+            output = dispatch_tool(block.name, block.input)
             display = str(output)[:150].replace("\n", " ")
             print(f"  \033[36m> {block.name}\033[0m {display}")
             results.append(
