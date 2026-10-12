@@ -6,7 +6,7 @@
 ## 1. 内容不变原则
 
 - 节点 id、节点文字、边（起点、终点、边文字、线型）与改前完全一致。
-- 原有行只允许改缩进；新增行只允许：`classDef`、`class`、`subgraph`/`end`，
+- 原有行只允许改缩进（顺序不变，不得合并、拆分、加分号或改行内空格）；新增行只允许：`classDef`、`class`、`subgraph`/`end`，
   以及 subgraph 内只写节点 id 的成员行（如 `B`，不带文字）。
 - 用 `python3 scripts/check_mermaid_restyle.py --base <git ref>` 机械证明以上两点，
   输出贴进 PR 描述，并写明基线 SHA。
@@ -41,7 +41,8 @@ subgraph 的 id 与标题只能取自下表（中文 README 用中文标题，�
 
 ## 5. classDef 调色板
 
-浅底 + 深色描边 + 显式深色文字，GitHub light / dark 主题下都可读：
+浅底 + 深色描边 + 显式深色文字，GitHub light / dark 主题下都可读。属性只允许 `fill`/`stroke`/`color`（`#rgb` 或 `#rrggbb`）
+与 `stroke-width`（正整数 + `px`），逗号分隔、不重复、无空格：
 
 ```text
 classDef io fill:#e0f2fe,stroke:#0369a1,color:#0c2a3d

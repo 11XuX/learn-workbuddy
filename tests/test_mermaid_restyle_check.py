@@ -29,6 +29,37 @@ def lines(text):
     return text.splitlines()
 
 
+CORE = "classDef core fill:#ede9fe"
+EXTRA = [  # 追加到 BASE 末尾的行
+    f"{CORE} extra",  # 行尾内容
+    f"{CORE},stroke:#ffff;",  # 非法属性值（#rgb 现为合法，改用 4 位）
+    "class B core x",
+    'subgraph loop["Agent Loop"] B\n    end',
+    "classDef  core fill:#ede9fe",  # 关键字间多余空格
+    "ClassDef core fill:#ede9fe",  # 大小写
+    'Subgraph loop["Agent Loop"]\n    B\n    end',
+    'subgraph loop["Agent Loop"]\n    B\n    END',
+    'subgraph loop["Agent Loop"]\n    End\n    end',  # 关键字当 id
+    'subgraph loop["Agent Loop"]\n    end',  # 空 subgraph
+    'subgraph loop["Agent Loop"]\n    B',  # 未闭合 subgraph
+    'subgraph loop["Agent Loop"]\n    subgraph tools["Tool Execution"]\n    C\n    end\n    end',  # 嵌套
+    'A["Prompt\n    "]',  # 引号未闭合
+    "Flowchart LR",
+    f"{CORE}\n    class B core\n    class B core",  # 重复 class
+    *[f"classDef core stroke:#123456,{p}" for p in ("color:2px", "stroke-width:#fff", "stroke-width:0px", "stroke-width:-1px",
+                                                  "stroke-width:1.5px", "fill:red", "fill:#ggg", "stroke:#111", "shape:x", "fill:")],
+]
+L = lines(BASE)
+PHYSICAL = [  # 原行只允许改缩进
+    L[:2] + [L[2] + "; " + L[3]] + L[4:],  # 两行合并
+    L[:1] + ['    A["Prompt"]', '    A --> B["Loop"]'] + L[2:],  # 一行拆成多行
+    L[:2] + [L[3], L[2]] + L[4:],  # 重排
+    L[:1] + [L[1] + ";"] + L[2:],  # 行尾加分号
+    L[:1] + [L[1].replace("-->", "-->  ")] + L[2:],  # 行内多余空格
+    L + [L[4]],  # 重复带一个原行
+]
+
+
 def test_style_only_lines_pass():
     assert mod.compare(lines(BASE), lines(BASE + STYLE)) == [("loop", "Agent Loop")]
     assert mod.compare(lines(BASE), lines(BASE.replace("    ", "  "))) == []
@@ -54,7 +85,9 @@ def test_style_only_lines_pass():
         BASE + "\n    B",  # subgraph 外的成员行
         BASE + '\n    subgraph loop["Agent Loop"]\n    Z\n    end',  # 未知成员
         BASE + STYLE.replace("class B,C core", "class B,C hot"),  # 未定义 classDef
-    ],
+    ]
+    + [BASE + "\n    " + e for e in EXTRA]
+    + ["\n".join(n) for n in PHYSICAL],
 )
 def test_semantic_or_syntax_changes_fail(new):
     with pytest.raises(mod.RestyleError):
@@ -67,9 +100,6 @@ def test_extract_blocks_rejects_unclosed_fence():
         mod.extract_blocks("```mermaid\nflowchart LR\n")
 
 
-CORE = "classDef core fill:#ede9fe"
-
-
 def test_semicolons_split_statements_outside_quotes_only():
     base = BASE + '\n    E -->|"a;b"| F["x; y"]'
     assert ("F", "x; y") in mod.parse(lines(base))["nodes"]
@@ -78,32 +108,8 @@ def test_semicolons_split_statements_outside_quotes_only():
         mod.compare(lines(base), lines(base + f"\n    {CORE}; A --> E"))  # 分号夹带边
 
 
-@pytest.mark.parametrize(
-    "extra",
-    [
-        f"{CORE} extra",  # 行尾内容
-        f"{CORE},stroke:#fff;",  # 非法属性值
-        "class B core x",
-        'subgraph loop["Agent Loop"] B\n    end',
-        "classDef  core fill:#ede9fe",  # 关键字间多余空格
-        "ClassDef core fill:#ede9fe",  # 大小写
-        'Subgraph loop["Agent Loop"]\n    B\n    end',
-        'subgraph loop["Agent Loop"]\n    B\n    END',
-        'subgraph loop["Agent Loop"]\n    End\n    end',  # 关键字当 id
-        'subgraph loop["Agent Loop"]\n    end',  # 空 subgraph
-        'subgraph loop["Agent Loop"]\n    B',  # 未闭合 subgraph
-        'subgraph loop["Agent Loop"]\n    subgraph tools["Tool Execution"]\n    C\n    end\n    end',  # 嵌套
-        'A["Prompt\n    "]',  # 引号未闭合
-        "Flowchart LR",
-        f"{CORE}\n    class B core\n    class B core",  # 重复 class
-    ],
-)
-def test_whitelist_rejects_leftovers_case_and_structure(extra):
-    with pytest.raises(mod.RestyleError):
-        mod.compare(lines(BASE), lines(BASE + "\n    " + extra))
-
-
 def test_indentation_and_comments_are_presentation():
+    assert mod.compare(L, ["\t" + ln for ln in L]) == []  # tab 缩进
     new = "\n".join("  " + ln for ln in lines(BASE)) + "\n    %% 样式\n    " + CORE + "\n    class B core"
     assert mod.compare(lines(BASE), lines(new)) == []
     with pytest.raises(mod.RestyleError):

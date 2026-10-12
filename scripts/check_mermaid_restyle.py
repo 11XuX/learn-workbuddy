@@ -1,8 +1,5 @@
 """Prove a mermaid restyle only changes presentation; rules: docs/architecture/diagram-style.md.
-
-Conservative whitelist parser: each line is split on `;` outside quotes, every statement must
-fullmatch one known form, anything else is rejected.
-"""
+Whitelist parser: split on `;` outside quotes, every statement must fullmatch a known form."""
 import argparse
 import re
 import subprocess
@@ -23,13 +20,14 @@ FORMS = {
     "head": re.compile(r"flowchart (LR|RL|TD|TB|BT)"),
     "edge": re.compile(rf"{NODE}\s*(?:(-->|---|-\.->)\s*(?:\|{TXT}\|)?|-\.\s*{TXT}\s*\.->)\s*{NODE}"),
     "node": re.compile(rf"({ID})\[{TXT}\]"),
-    "classdef": re.compile(rf"classDef ({ID}) ((?:fill|stroke|color):#[0-9a-fA-F]{{6}}"
-                           rf"(?:,(?:fill|stroke|color|stroke-width):(?:#[0-9a-fA-F]{{6}}|\d+px))*)"),
+    "classdef": re.compile(rf"classDef ({ID}) ([^\s,]+(?:,[^\s,]+)*)"),
     "class": re.compile(rf"class ({ID}(?:,{ID})*) ({ID})"),
     "subgraph": re.compile(rf"subgraph ({ID})\[{TXT}\]"),
     "end": re.compile(r"end"),
     "member": re.compile(rf"({ID})"),
 }
+COLOR = re.compile(r"#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})")
+PROPS = {"fill": COLOR, "stroke": COLOR, "color": COLOR, "stroke-width": re.compile(r"[1-9][0-9]*px")}
 BAD_TEXT = re.compile(r"<[A-Za-z/!]|\bfa[bsr]?:|[\[\]|]")
 
 
@@ -56,7 +54,6 @@ def extract_blocks(text: str) -> list[list[str]]:
 
 
 def statements(lines: list[str]) -> list[str]:
-    """Split on `;` outside quotes; drop blank statements and `%%` comment lines."""
     out = []
     for line in lines:
         if line.strip().startswith("%%"):
@@ -88,6 +85,7 @@ def parse(lines: list[str]) -> dict:
         _check(not any(BAD_TEXT.search(t) for t in g[1:] if t and kind != "classdef"), f"禁止的文字内容: {st}")
         ids = [g[0], g[5]] if kind == "edge" else [g[0]] if kind in ("node", "member", "subgraph") else []
         _check(all(i.lower() not in KEYWORDS for i in ids), f"id 不能是关键字: {st}")
+        pairs = ()
         if kind == "edge":
             src, stext, arrow, label, dlabel, dst, dtext = g
             edge = (src, dst, label if arrow else dlabel, ARROWS[arrow] if arrow else "dotted")
@@ -101,23 +99,21 @@ def parse(lines: list[str]) -> dict:
             _check(g[0] not in groups, f"重复的 subgraph: {g[0]}")
             _check(g[1] in VOCAB.get(g[0], ()), f"subgraph 不在规范词表内: {st}")
             groups[g[0]], open_group = g[1], g[0]
-            continue
         elif kind == "end":
             _check(open_group is not None, "多余的 end")
             _check(members and members[-1][0] == open_group, f"空 subgraph: {open_group}")
             open_group = None
-            continue
         elif kind == "classdef":
             _check(g[0] not in class_defs, f"重复的 classDef: {g[0]}")
+            props = [p.partition(":") for p in g[1].split(",")]
+            _check(len({k for k, _, _ in props}) == len(props), f"classDef 属性重复: {st}")
+            _check(all(k in PROPS and PROPS[k].fullmatch(v) for k, _, v in props), f"classDef 属性非法: {st}")
             class_defs.add(g[0])
-            continue
         elif kind == "class":
             classed += [(i, g[1]) for i in g[0].split(",")]
-            continue
         else:  # member
             _check(open_group is not None, f"成员行只能出现在 subgraph 内: {st}")
             members.append((open_group, g[0]))
-            continue
         for nid, ntext in pairs:
             _check(ntext is None or texts.get(nid) is None, f"节点重复定义文字: {nid}")
             texts[nid] = ntext if ntext is not None else texts.get(nid)
@@ -131,7 +127,19 @@ def parse(lines: list[str]) -> dict:
     _check(all(c in class_defs and i in set(texts) | set(groups) for i, c in classed),
            f"class 引用了未定义的类或节点: {classed}")
     return {"direction": body[0], "nodes": set(texts.items()), "edges": Counter(edges),
-            "subgraphs": list(groups.items()), "lines": Counter(body)}
+            "subgraphs": list(groups.items()), "raw": [ln.strip() for ln in lines if ln.strip()]}
+
+
+def check_lines(old_raw: list[str], new_raw: list[str]) -> None:
+    """Original physical lines survive in order (indentation aside); other lines are style-only."""
+    i = 0
+    for ln in new_raw:
+        if i < len(old_raw) and ln == old_raw[i]:
+            i += 1
+        elif not ln.startswith("%%"):
+            _check(all(classify(st)[0] in ("classdef", "class", "subgraph", "end", "member") for st in statements([ln])),
+                   f"新增行只能是样式行（原行只允许改缩进）: {ln}")
+    _check(i == len(old_raw), f"原有行被修改、合并、拆分、重排或删除: {old_raw[i:i + 1]}")
 
 
 def compare(old_lines: list[str], new_lines: list[str]) -> list[tuple[str, str]]:
@@ -139,8 +147,7 @@ def compare(old_lines: list[str], new_lines: list[str]) -> list[tuple[str, str]]
     old, new = parse(old_lines), parse(new_lines)
     for key, label in (("direction", "方向"), ("nodes", "节点 (id, 文字)"), ("edges", "边")):
         _check(old[key] == new[key], f"{label}不一致")
-    missing = old["lines"] - new["lines"]
-    _check(not missing, f"原有语句被修改或删除: {sorted(missing)}")
+    check_lines(old["raw"], new["raw"])
     return [sg for sg in new["subgraphs"] if sg not in old["subgraphs"]]
 
 
