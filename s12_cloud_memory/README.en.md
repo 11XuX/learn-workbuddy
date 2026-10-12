@@ -280,7 +280,7 @@ A wrong conversation memory, or one the user asked to forget, keeps being recall
 - Public `append()` rejects `RETRACTION`; retracting an unknown id or a retraction is rejected and leaves the file unchanged;
 - `active_records()` checks raw JSON types of retractions on disk and raises `RemoteMemoryCorruptionError` on any invalid one.
 
-Known limitation: `append()` for non-retraction records still accepts `int`, `str` subclasses and empty ids (empty becomes a uuid); legacy records with surrounding whitespace or over 200 chars cannot be retracted, and `retract()` says so explicitly.
+Known limitation: `append()` accepts only built-in `str` ids (since `PR 44`), and an empty id still becomes a uuid; legacy records with surrounding whitespace or over 200 chars cannot be retracted, and `retract()` says so explicitly.
 
 ### Try It
 
@@ -298,6 +298,50 @@ assert "conv-1" not in {r.memory_id for r in store.active_records()}
 | Active view | `active_records()` | no |
 
 Left to the reader: add `retracted_records` to `RecallResult` and explain whether that count leaks retracted content; implement a physical purge that erases retracted content while keeping retraction events, and design crash recovery for it.
+
+## Agent Tool Entry: retract_memory
+
+### Problem
+
+`retract()` above is library-only. When the user says "forget that" in chat, the model has no tool to call and can only promise.
+
+### Solution
+
+A new tool `retract_memory(memory_id, reason)` is registered in `TOOLS` and `TOOL_HANDLERS`; its handler calls `store.retract()`. The harness fills `source` (`source_type="model_tool"`, same label as s11); the model cannot pass it.
+
+| | s11 `forget_user_preference` | s12 `retract_memory` |
+| --- | --- | --- |
+| Identifier | preference key | exact `memory_id` |
+| Original text | tombstone, value dropped | kept in the `read_all()` audit stream |
+| Replay | only "deleted" is visible | original record and retraction event visible |
+
+### How It Works
+
+- `dispatch_tool()` checks arguments against the schema first: missing, extra or wrongly typed arguments return `{"ok": false, "error": ...}` instead of raising `TypeError` at `handler(**input)`;
+- validation errors from `retract()` (unknown id, retracting a retraction, empty reason, non-`str` id) also become `ok=false`, and the file is unchanged;
+- success returns `{"ok": true, "memory_id", "retracts", "reason"}`; a repeated retraction returns the stored event, so `reason` is the one recorded first;
+- "call only when the user explicitly asks this turn" and "do not guess ids" are system-prompt conventions, not harness checks; the harness only enforces what `retract()` validates.
+
+`default_runtime()` rebuilds the system prompt on every call, so a retracted profile disappears from the next turn's prompt.
+
+### Try It
+
+```python
+print(dispatch_tool("retract_memory", {"memory_id": "conversation-001", "reason": "user asked to forget"}))
+print(dispatch_tool("retract_memory", {"memory_id": "conversation-001"}))  # ok=false
+```
+
+### Architecture Mapping
+
+```mermaid
+flowchart LR
+    M[model tool_use] --> D[dispatch_tool argument check]
+    D -->|invalid| E[ok=false]
+    D --> H[retract_memory]
+    H --> R[store.retract]
+    R -->|validation fails| E
+    R --> A[retraction event appended to JSONL]
+```
 
 ## No-Key Composition Boundary
 
