@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
+import re
 """
 s19_visualizer.py - Visualizer: SVG/HTML Widget Streaming Injection
 
@@ -338,7 +339,7 @@ class WidgetRenderer:
         # Validate HTML (no full document)
         if not is_svg:
             for forbidden in ["<!DOCTYPE", "<html", "<head", "<body"]:
-                if forbidden in widget_code:
+                if re.search(re.escape(forbidden) + r"(?![^\s/>])", widget_code, re.I):
                     return f"Error: HTML must be a raw fragment. Found '{forbidden}'."
 
         # Save to file
