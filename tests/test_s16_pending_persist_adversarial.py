@@ -306,3 +306,54 @@ def test_filename_rules_and_slug_collisions(s16, tmp_path):
     s16.pending_skills.clear()
     assert s16.load_pending() == []
     assert set(s16.pending_skills) == set(titles)
+
+
+@pytest.mark.parametrize("replace_fails", [False, True])
+def test_pending_temp_symlink_never_overwrites_outside_file(
+    s16, tmp_path, monkeypatch, replace_fails
+):
+    """Predictable .<name>.<pid>.tmp + open() follows a planted symlink and can
+    truncate a file outside PENDING_DIR before os.replace. Fail closed: never
+    overwrite outside bytes, whether create succeeds or replace is injected-fail.
+    """
+    import os
+
+    directory = enable(s16, tmp_path)
+    title = "temp-link-candidate"
+    target = directory / filename(title)
+
+    outside = tmp_path / "outside.txt"
+    original = b"must remain unchanged\n"
+    outside.write_bytes(original)
+
+    trap = directory / f".{target.name}.{os.getpid()}.tmp"
+    trap.symlink_to(outside)
+
+    before_index = list(s16.skill_index)
+    before_seeds = dict(s16.SEED_SKILLS)
+
+    if replace_fails:
+        def denied_replace(*args, **kwargs):
+            raise OSError("injected replace failure")
+
+        monkeypatch.setattr(s16.os, "replace", denied_replace)
+
+    result = s16.create_skill(title, "fetch", ["fetch"], BODY, NET)
+
+    assert outside.read_bytes() == original
+    assert s16.skill_index == before_index
+    assert s16.SEED_SKILLS == before_seeds
+
+    if replace_fails:
+        assert "落盘失败" in result
+        assert title not in s16.pending_skills
+        assert not target.exists()
+    elif title in s16.pending_skills:
+        assert "待用户审批" in result
+        assert target.is_file() and not target.is_symlink()
+        s16.pending_skills.clear()
+        assert s16.load_pending() == []
+        assert title in s16.pending_skills
+    else:
+        assert "落盘失败" in result
+        assert not target.exists()
