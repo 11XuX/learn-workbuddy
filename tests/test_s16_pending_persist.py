@@ -19,17 +19,32 @@ def s16_module():
 
 
 @pytest.fixture
-def s16(s16_module, tmp_path):
+def clean(s16_module):
+    """保存并恢复 s16 的全部模块级状态，用例之间互不污染。"""
     m = s16_module
-    index, seeds = list(m.skill_index), dict(m.SEED_SKILLS)
-    m.pending_skills.clear()
-    m.enable_pending_persistence(tmp_path / "pending")
-    yield m
-    m.PENDING_DIR = None
-    m.pending_skills.clear()
-    m.skill_index[:] = index
-    m.SEED_SKILLS.clear()
-    m.SEED_SKILLS.update(seeds)
+    saved = (m.PENDING_DIR, dict(m.pending_skills), list(m.skill_index),
+             list(m.loaded_skills), dict(m.SEED_SKILLS))
+    flags = [(s, s.loaded) for s in m.skill_index]
+    try:
+        m.PENDING_DIR = None
+        m.pending_skills.clear()
+        yield m
+    finally:
+        m.PENDING_DIR = saved[0]
+        m.pending_skills.clear()
+        m.pending_skills.update(saved[1])
+        m.skill_index[:] = saved[2]
+        m.loaded_skills[:] = saved[3]
+        m.SEED_SKILLS.clear()
+        m.SEED_SKILLS.update(saved[4])
+        for skill, flag in flags:
+            skill.loaded = flag
+
+
+@pytest.fixture
+def s16(clean, tmp_path):
+    clean.enable_pending_persistence(tmp_path / "pending")
+    return clean
 
 
 def create(m, title="fetch", content=P1_BODY, permissions=NET):
@@ -47,15 +62,13 @@ files = lambda m: sorted(p.name for p in m.PENDING_DIR.iterdir())  # noqa: E731
 indexed = lambda m, title: any(s.title == title for s in m.skill_index)  # noqa: E731
 
 
-def test_default_off_writes_nothing(s16_module, tmp_path, monkeypatch):
-    m = s16_module
+def test_default_off_writes_nothing(clean, tmp_path, monkeypatch):
+    m = clean
     monkeypatch.chdir(tmp_path)
     assert m.PENDING_DIR is None and m.load_pending() == []
     assert "待用户审批" in create(m)
     assert list(tmp_path.iterdir()) == [] and m.pending_skills["fetch"].sha256 == ""
     assert "已经用户批准" in m.approve_skill("fetch")
-    m.skill_index[:] = [s for s in m.skill_index if s.title != "fetch"]
-    m.SEED_SKILLS.pop("fetch")
 
 
 @pytest.mark.parametrize("bad", ["", " x", "x\n", 0, None, b"x", type("S", (str,), {})("x")])
@@ -170,3 +183,14 @@ def test_write_failure_leaves_no_state(s16, monkeypatch):
     monkeypatch.undo()
     assert "落盘失败" in create(s16, type("S", (str,), {})("sub"))  # str 子类不落盘
     assert not s16.pending_skills and files(s16) == []
+
+
+def test_unreadable_dir_and_duplicate_load_warn(s16, monkeypatch):
+    create(s16)
+    assert s16.load_pending() == ["跳过 " + files(s16)[0] + ": 已在待审批队列中"]
+
+    def denied(path):
+        raise PermissionError("injected")
+
+    monkeypatch.setattr(os, "scandir", denied)
+    assert "无法读取 pending 目录" in s16.load_pending()[0]

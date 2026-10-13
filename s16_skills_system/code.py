@@ -658,7 +658,11 @@ PENDING_DIR: Path | None = None  # None 时完全不读写磁盘，行为与内�
 
 
 def enable_pending_persistence(path) -> Path:
-    """显式开启落盘（__main__ 或 harness 调用）；import 时不碰文件系统。"""
+    """显式开启落盘（__main__ 或 harness 调用）；import 时不碰文件系统。
+
+    开启前已在内存队列里的项没有对应文件，开启后 approve/reject 会因核对失败而拒绝；
+    文件被外部删除的项同理。这类项无法在本进程结案，需重启后重新 create。
+    """
     global PENDING_DIR
     if type(path) is str:
         if not path or path != path.strip():
@@ -735,8 +739,14 @@ def load_pending() -> list[str]:
     """显式恢复（模拟重启后调用）：逐个文件校验并重新审计，返回告警列表。"""
     if PENDING_DIR is None:
         return []
+    try:  # 目录不可读时显式告警，而不是像 glob 那样静默返回空
+        with os.scandir(PENDING_DIR) as it:
+            names = sorted(e.name for e in it
+                           if e.name.endswith(".json") and not e.name.startswith("."))
+    except OSError as exc:
+        return [f"无法读取 pending 目录: {exc}"]
     warnings = []
-    for path in sorted(PENDING_DIR.glob("*.json")):
+    for path in (PENDING_DIR / name for name in names):
         try:
             pending = _read_pending(path)
         except Exception as exc:
@@ -745,11 +755,15 @@ def load_pending() -> list[str]:
         # 不信任磁盘上的审批状态：重算审计，P0 删除；P2 也只进队列，不自动入索引
         level, report = audit_skill(pending.skill_md, requested_permissions=pending.permissions)
         if level == "P0":
-            path.unlink(missing_ok=True)
-            warnings.append(f"删除 {path.name}: 重新审计为 P0 {report}")
-        elif pending.title in pending_skills or any(
-                s.title == pending.title for s in skill_index):
-            warnings.append(f"跳过 {path.name}: 同名技能已存在")
+            try:  # 删除失败也不能中断后续文件的恢复；该项照样不入队
+                path.unlink(missing_ok=True)
+                warnings.append(f"删除 {path.name}: 重新审计为 P0 {report}")
+            except OSError as exc:
+                warnings.append(f"跳过 {path.name}: 重新审计为 P0，但删除失败 ({exc})")
+        elif pending.title in pending_skills:
+            warnings.append(f"跳过 {path.name}: 已在待审批队列中")
+        elif any(s.title == pending.title for s in skill_index):
+            warnings.append(f"跳过 {path.name}: 索引中已有同名技能")
         else:
             pending.audit_report = report
             pending_skills[pending.title] = pending
