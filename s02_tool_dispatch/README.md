@@ -24,6 +24,19 @@ flowchart LR
     F -. "execution_error" .-> G
     G --> H["provider tool_result"]
     C --- S["ToolSpec = schema + handler + policy"]
+    subgraph dispatch["分发与校验"]
+        C
+        D
+        E
+    end
+    classDef io fill:#e0f2fe,stroke:#0369a1,color:#0c2a3d
+    classDef core fill:#ede9fe,stroke:#6d28d9,color:#2e1065
+    classDef tool fill:#dcfce7,stroke:#15803d,color:#052e16
+    classDef data fill:#fef9c3,stroke:#a16207,color:#422006
+    class A,B,G,H io
+    class C,D,E core
+    class F tool
+    class S data
 ```
 
 ## 学习前置知识

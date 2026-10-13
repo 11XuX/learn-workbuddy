@@ -19,6 +19,12 @@ flowchart LR
     D --> E["tool_result -> messages"]
     E --> B
     C -->|"无 tool_use block"| F["AgentLoopResult"]
+    classDef io fill:#e0f2fe,stroke:#0369a1,color:#0c2a3d
+    classDef core fill:#ede9fe,stroke:#6d28d9,color:#2e1065
+    classDef tool fill:#dcfce7,stroke:#15803d,color:#052e16
+    class A,F io
+    class B,C core
+    class D,E tool
 ```
 
 ## 学习前置知识
