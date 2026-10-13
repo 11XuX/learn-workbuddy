@@ -339,7 +339,7 @@ class WidgetRenderer:
         # Validate HTML (no full document)
         if not is_svg:
             for forbidden in ["<!DOCTYPE", "<html", "<head", "<body"]:
-                if re.search(re.escape(forbidden) + r"(?![^\s/>])", widget_code, re.I):
+                if re.search(re.escape(forbidden) + ("" if forbidden == "<!DOCTYPE" else r"(?![^\s/>])"), widget_code, re.I):
                     return f"Error: HTML must be a raw fragment. Found '{forbidden}'."
 
         # Save to file
