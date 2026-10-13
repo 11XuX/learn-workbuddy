@@ -63,7 +63,7 @@ from mini_workbuddy.chapter_demo import maybe_run_chapter_demo as _wb_maybe_run_
 _wb_maybe_run_chapter_demo(__file__, PROGRESSION)
 from mini_workbuddy.chapter_demo import prepare_chapter_provider as _wb_prepare_chapter_provider
 _wb_prepare_chapter_provider()
-import fnmatch, hashlib, os, re, sys, time, json, unicodedata
+import fnmatch, hashlib, os, re, sys, tempfile, time, json, unicodedata
 from pathlib import Path
 from dataclasses import dataclass, field
 
@@ -695,15 +695,16 @@ def _write_pending(pending: PendingSkill) -> None:
     data = json.dumps({"title": pending.title, "skill_md": pending.skill_md,
                        "permissions": pending.permissions.as_dict(),
                        "skill_md_sha256": pending.sha256})
-    tmp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
-    try:  # 先写临时文件再 os.replace，读者只会看到旧文件或完整新文件
-        with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+    # mkstemp 用随机名独占创建（O_EXCL，不跟随预置的符号链接），再 os.replace
+    fd, tmp = tempfile.mkstemp(dir=PENDING_DIR, prefix=f".{target.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(data + "\n")
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp, target)
     except BaseException:
-        tmp.unlink(missing_ok=True)
+        os.unlink(tmp)  # 只清理本次创建的文件
         raise
 
 
