@@ -66,8 +66,21 @@ def test_single_quoted_viewbox_is_accepted(renderer):
     assert '"status": "rendered"' in out, out
 
 
-def test_viewbox_width_6800_is_rejected(renderer):
-    code = '<svg viewBox="0 0 6800 400" xmlns="http://www.w3.org/2000/svg"></svg>'
+def test_comma_separated_viewbox_is_accepted(renderer):
+    code = '<svg viewBox="0,0,680,400" xmlns="http://www.w3.org/2000/svg"></svg>'
+    out = renderer.show_widget("chart", code, ["x"])
+    assert '"status": "rendered"' in out, out
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        '<svg viewBox="0 0 6800 400" xmlns="http://www.w3.org/2000/svg"></svg>',
+        '<svg viewBox="0 0 680e1 400" xmlns="http://www.w3.org/2000/svg"></svg>',
+        '<svg data-viewBox="0 0 680 400" viewBox="0 0 400 300"></svg>',
+    ],
+)
+def test_wrong_width_viewbox_is_rejected(renderer, code):
     out = renderer.show_widget("chart", code, ["x"])
     assert out.startswith("Error: SVG viewBox must start with '0 0 680'."), out
 
