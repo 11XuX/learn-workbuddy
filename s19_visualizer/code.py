@@ -333,7 +333,7 @@ class WidgetRenderer:
         # Validate SVG
         is_svg = widget_code.strip().startswith("<svg")
         if is_svg:
-            if 'viewBox="0 0 680' not in widget_code:
+            if not re.search(r"""(?<![\w:-])viewBox\s*=\s*["']\s*0[\s,]+0[\s,]+680(?![\w.])""", widget_code):
                 return f"Error: SVG viewBox must start with '0 0 680'. Got different viewBox."
 
         # Validate HTML (no full document)
