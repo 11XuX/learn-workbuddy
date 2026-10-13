@@ -32,6 +32,9 @@ def renderer(tmp_path, monkeypatch):
         '<svg viewBox="0 ,0, 680 400"></svg>',  # 空白与单个逗号混用
         '<svg viewBox="0\r\n0\r\n680 400"></svg>',  # CRLF 属于 XML 空白
         '<svg viewBox="0 0 680,400"></svg>',  # 680 后接逗号
+        '<svg\tviewBox="0 0 680 400"></svg>',  # 属性名前是 tab
+        '<svg\r\nviewBox="0 0 680 400"></svg>',  # 属性名前是 CRLF
+        '<svg id="a" viewBox="0 0 680 400"></svg>',  # 前面还有别的属性
         '<svg\nviewBox="0 0 680 400"></svg>',  # attribute on its own line
         '<svg viewBox="0 0 680 -40.5"></svg>',  # negative/decimal height is fine
         '  <svg viewBox="0 0 680 400"></svg>',  # leading whitespace before <svg
@@ -68,8 +71,20 @@ def test_viewbox_edges_accepted(renderer, code):
         '<svg viewBox="0 0 680\u0660 400"></svg>',  # 680 后接阿拉伯-印度数字
         '<svg viewBox="\uff10 \uff10 \uff16\uff18\uff10"></svg>',  # 全角数字
         '<svg viewBox="0 0 \u0666\u0668\u0660"></svg>',  # 阿拉伯-印度数字 680
+        '<svg foo.viewBox="0 0 680 400" viewBox="0 0 400 300"></svg>',  # 属性名前是 .
+        '<svg data.viewBox="0 0 680 400"></svg>',
+        '<svg a\u00b7viewBox="0 0 680 400"></svg>',  # 属性名前是中点
+        '<svg\xa0viewBox="0 0 680 400"></svg>',  # NBSP 不是 XML 空白
+        '<svg/viewBox="0 0 680 400"></svg>',
+        '<svg a="x"viewBox="0 0 680 400"></svg>',  # 属性之间缺空白，不是合法 XML
+        '<svg\u2028viewBox="0 0 680 400"></svg>',
     ],
 )
 def test_viewbox_edges_rejected(renderer, code):
     out = renderer.show_widget("chart", code, ["x"])
     assert out.startswith(ERR), out
+
+
+# 已知限制（卡面「范围外」，Critic 裁定）：viewBox 文本藏在其他属性值里，
+# 例如 <svg title="a viewBox='0 0 680'" viewBox="0 0 1 1">，仍会被误收。
+# 要堵需解析属性，超出 L336 一行范围，故此处不写「应拒绝」断言。
