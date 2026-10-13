@@ -110,3 +110,71 @@ def test_rejection_precedes_save_and_browser_open(harness, value):
     assert renderer.widget_count == 0
     storage.__truediv__.assert_not_called()
     browser.assert_not_called()
+
+
+# r2（65869f9）：属性名前必须是 XML 空白的新边界
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        " ",
+        "\t",
+        "\r",
+        "\n",
+        " \t\r\n ",
+        ' xmlns="http://www.w3.org/2000/svg"\n',
+        ' id="x"\t',
+        ' xmlns:p="urn:p" p:flag="yes"\r\n',
+    ],
+)
+def test_r2_xml_attribute_boundary_accepts_valid_prefixes(harness, prefix):
+    renderer, storage, browser = harness
+    code = f"<svg{prefix}viewBox='0 0 680 400'></svg>"
+    assert ET.fromstring(code).attrib["viewBox"] == "0 0 680 400"
+
+    result = json.loads(renderer.show_widget("boundary", code, ["x"]))
+
+    assert result["status"] == "rendered"
+    assert result["type"] == "svg"
+    assert renderer.widget_count == 1
+    storage.__truediv__.return_value.write_text.assert_called_once_with(code)
+    browser.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    ["", "\f", "\v", "\u00a0", "\u2028", "/", ' id="x"'],
+)
+def test_r2_invalid_attribute_separation_has_no_save_side_effects(harness, prefix):
+    renderer, storage, browser = harness
+    code = f"<svg{prefix}viewBox='0 0 680 400'></svg>"
+    with pytest.raises(ET.ParseError):
+        ET.fromstring(code)
+    assert 'viewBox="0 0 680' not in code
+
+    result = renderer.show_widget("boundary", code, ["x"])
+
+    assert result.startswith(ERR), result
+    assert renderer.widget_count == 0
+    storage.__truediv__.assert_not_called()
+    browser.assert_not_called()
+
+
+@pytest.mark.parametrize("attribute", ["p:viewBox", "a\u00b7viewBox"])
+def test_r2_other_xml_attribute_names_cannot_supply_viewbox(harness, attribute):
+    renderer, storage, browser = harness
+    code = (
+        f"<svg xmlns:p='urn:p' {attribute}='0 0 680 400' "
+        "viewBox='0 0 400 300'></svg>"
+    )
+    attributes = ET.fromstring(code).attrib
+    key = "{urn:p}viewBox" if attribute == "p:viewBox" else attribute
+    assert attributes[key] == "0 0 680 400"
+    assert attributes["viewBox"] == "0 0 400 300"
+    assert 'viewBox="0 0 680' not in code
+
+    result = renderer.show_widget("boundary", code, ["x"])
+
+    assert result.startswith(ERR), result
+    assert renderer.widget_count == 0
+    storage.__truediv__.assert_not_called()
+    browser.assert_not_called()
