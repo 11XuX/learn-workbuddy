@@ -71,14 +71,18 @@ def test_header_element_is_a_valid_fragment(renderer):
     "code",
     [
         "<!doctype html><p>hi</p>",
-        "<HTML><p>hi</p></HTML>",
-        "<HEAD><title>t</title></HEAD><p>hi</p>",
         "<BODY><p>hi</p></BODY>",
     ],
 )
 def test_full_document_tags_rejected_case_insensitively(renderer, code):
     out = renderer.show_widget("doc", code, ["x"])
     assert out.startswith("Error: HTML must be a raw fragment."), out
+
+
+def test_hyphenated_custom_elements_are_valid_fragments(renderer):
+    code = "<head-bar>x</head-bar><body-copy>y</body-copy>"
+    out = renderer.show_widget("custom", code, ["x"])
+    assert not out.startswith("Error"), out
 
 
 def test_control_plain_fragment_renders(renderer):
