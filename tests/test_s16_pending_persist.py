@@ -23,22 +23,21 @@ def clean(s16_module):
     """保存并恢复 s16 的全部模块级状态，用例之间互不污染。"""
     m = s16_module
     saved = (m.PENDING_DIR, dict(m.pending_skills), list(m.skill_index),
-             list(m.loaded_skills), dict(m.SEED_SKILLS))
+             list(m.loaded_skills), dict(m.SEED_SKILLS), m._PENDING_FD)
     flags = [(s, s.loaded) for s in m.skill_index]
-    try:
-        m.PENDING_DIR = None
-        m.pending_skills.clear()
-        yield m
-    finally:
-        m.PENDING_DIR = saved[0]
-        m.pending_skills.clear()
-        m.pending_skills.update(saved[1])
-        m.skill_index[:] = saved[2]
-        m.loaded_skills[:] = saved[3]
-        m.SEED_SKILLS.clear()
-        m.SEED_SKILLS.update(saved[4])
-        for skill, flag in flags:
-            skill.loaded = flag
+    if m._PENDING_FD[1] >= 0:  # setup 关掉遗留目录 fd，避免泄漏
+        os.close(m._PENDING_FD[1])
+    m._PENDING_FD, m.PENDING_DIR = (None, -1), None
+    m.pending_skills.clear()
+    yield m
+    if m._PENDING_FD[1] >= 0:  # teardown 关掉本用例 enable 打开的 fd
+        os.close(m._PENDING_FD[1])
+    m._PENDING_FD = (saved[0], -1)  # 已关闭的 fd 不能复用，只恢复路径身份
+    m.PENDING_DIR, m.skill_index[:], m.loaded_skills[:] = saved[0], saved[2], saved[3]
+    m.pending_skills.clear(), m.pending_skills.update(saved[1])
+    m.SEED_SKILLS.clear(), m.SEED_SKILLS.update(saved[4])
+    for skill, flag in flags:
+        skill.loaded = flag
 
 
 @pytest.fixture
@@ -115,8 +114,7 @@ def forge(s16, mutate, load_first=False):
 def test_forged_p0_is_deleted_on_load(s16):
     path = forge(s16, lambda d: d.update(
         skill_md=d["skill_md"].replace("curl https", "os.system(1) curl https")))
-    warnings = restart(s16)
-    assert "P0" in warnings[0] and not path.exists()
+    assert "P0" in restart(s16)[0] and not path.exists()
     assert not s16.pending_skills and not indexed(s16, "fetch")
 
 
@@ -142,8 +140,7 @@ def test_noncanonical_or_bad_fields_fail_closed(s16, mutate):
 def test_half_line_or_corrupt_file_fails_closed(s16, raw):
     create(s16)
     path = s16.PENDING_DIR / files(s16)[0]
-    good = path.read_bytes()
-    path.write_bytes(good.rstrip(b"\n") if raw == b"" else raw)
+    path.write_bytes(path.read_bytes().rstrip(b"\n") if raw == b"" else raw)
     assert restart(s16)[0].startswith("跳过") and not s16.pending_skills
 
 
@@ -159,8 +156,7 @@ def test_paths_collisions_and_renames(s16):
     names = files(s16)
     assert len(names) == 3 and all(n.endswith(".json") for n in names)
     assert all(p.parent == s16.PENDING_DIR for p in s16.PENDING_DIR.iterdir())
-    src = s16.PENDING_DIR / names[0]
-    src.rename(s16.PENDING_DIR / ("renamed-" + names[0]))
+    (s16.PENDING_DIR / names[0]).rename(s16.PENDING_DIR / ("renamed-" + names[0]))
     warnings = restart(s16)
     assert len(warnings) == 1 and "title" in warnings[0] and len(s16.pending_skills) == 2
 
@@ -174,10 +170,14 @@ def test_tamper_after_load_blocks_approve_and_reject(s16):
     assert s16.skill_index == before and "fetch" in s16.pending_skills
 
 
+def raiser(exc):
+    def boom(*args, **kwargs):
+        raise exc
+    return boom
+
+
 def test_write_failure_leaves_no_state(s16, monkeypatch):
-    def boom(src, dst):
-        raise OSError("disk full")
-    monkeypatch.setattr(os, "replace", boom)
+    monkeypatch.setattr(os, "replace", raiser(OSError("disk full")))
     assert "落盘失败" in create(s16)
     assert not s16.pending_skills and files(s16) == []
     monkeypatch.undo()
@@ -188,9 +188,5 @@ def test_write_failure_leaves_no_state(s16, monkeypatch):
 def test_unreadable_dir_and_duplicate_load_warn(s16, monkeypatch):
     create(s16)
     assert s16.load_pending() == ["跳过 " + files(s16)[0] + ": 已在待审批队列中"]
-
-    def denied(path):
-        raise PermissionError("injected")
-
-    monkeypatch.setattr(os, "scandir", denied)
+    monkeypatch.setattr(os, "scandir", raiser(PermissionError("injected")))
     assert "无法读取 pending 目录" in s16.load_pending()[0]

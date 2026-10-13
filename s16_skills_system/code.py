@@ -63,7 +63,7 @@ from mini_workbuddy.chapter_demo import maybe_run_chapter_demo as _wb_maybe_run_
 _wb_maybe_run_chapter_demo(__file__, PROGRESSION)
 from mini_workbuddy.chapter_demo import prepare_chapter_provider as _wb_prepare_chapter_provider
 _wb_prepare_chapter_provider()
-import fnmatch, hashlib, os, re, sys, tempfile, time, json, unicodedata
+import contextlib, fnmatch, hashlib, os, re, secrets, stat, sys, time, json, unicodedata
 from pathlib import Path
 from dataclasses import dataclass, field
 
@@ -655,6 +655,14 @@ def reject_skill(title: str) -> str:
 
 # 待审批持久化（默认关闭）：只持久化写闸状态，磁盘内容一律重新校验、重新审计
 PENDING_DIR: Path | None = None  # None 时完全不读写磁盘，行为与内存版一致
+_PENDING_FD: tuple = (None, -1)  # (目录, 目录 fd)：enable 时固定目录身份，之后只按 fd 相对读写
+
+
+def _dir_fd() -> int:
+    """返回 enable 时固定的目录 fd；PENDING_DIR 被外部改过或 fd 无效就拒绝。"""
+    if _PENDING_FD[0] != PENDING_DIR or _PENDING_FD[1] < 0:
+        raise SkillPermissionError("pending 目录未经 enable_pending_persistence 固定")
+    return _PENDING_FD[1]
 
 
 def enable_pending_persistence(path) -> Path:
@@ -663,7 +671,7 @@ def enable_pending_persistence(path) -> Path:
     开启前已在内存队列里的项没有对应文件，开启后 approve/reject 会因核对失败而拒绝；
     文件被外部删除的项同理。这类项无法在本进程结案，需重启后重新 create。
     """
-    global PENDING_DIR
+    global PENDING_DIR, _PENDING_FD
     if type(path) is str:
         if not path or path != path.strip():
             raise ValueError(f"pending 目录必须是非空且首尾无空白的路径：{path!r}")
@@ -671,7 +679,11 @@ def enable_pending_persistence(path) -> Path:
     if not isinstance(path, Path):
         raise TypeError(f"pending 目录必须是 str 或 Path：{type(path).__name__}")
     path.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path.resolve(), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    if _PENDING_FD[1] >= 0:
+        os.close(_PENDING_FD[1])
     PENDING_DIR = path.resolve()
+    _PENDING_FD = (PENDING_DIR, fd)
     return PENDING_DIR
 
 
@@ -695,24 +707,31 @@ def _write_pending(pending: PendingSkill) -> None:
     data = json.dumps({"title": pending.title, "skill_md": pending.skill_md,
                        "permissions": pending.permissions.as_dict(),
                        "skill_md_sha256": pending.sha256})
-    # mkstemp 用随机名独占创建（O_EXCL，不跟随预置的符号链接），再 os.replace
-    fd, tmp = tempfile.mkstemp(dir=PENDING_DIR, prefix=f".{target.name}.", suffix=".tmp")
+    # 随机名 + O_EXCL 独占创建（不跟随符号链接），全部相对固定的目录 fd，再 os.replace
+    dfd, tmp = _dir_fd(), f".{target.name}.{secrets.token_hex(8)}.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dfd)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
+            fd = -1  # 已交给 fh，由 with 负责关闭
             fh.write(data + "\n")
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp, target)
+        os.replace(tmp, target.name, src_dir_fd=dfd, dst_dir_fd=dfd)
     except BaseException:
-        os.unlink(tmp)  # 只清理本次创建的文件
+        if fd >= 0:
+            os.close(fd)
+        with contextlib.suppress(OSError):  # 只清理本次创建的文件，不掩盖原异常
+            os.unlink(tmp, dir_fd=dfd)
         raise
 
 
 def _read_pending(path: Path) -> PendingSkill:
     """严格读取一个待审批文件；任何不符都抛异常（fail closed）。"""
-    if path.is_symlink() or not path.is_file():
-        raise SkillPermissionError("不是普通文件")
-    raw = path.read_bytes().decode("utf-8")
+    fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=_dir_fd())
+    with os.fdopen(fd, "rb") as fh:  # 相对固定目录 fd 打开，fstat 确认是普通文件
+        if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+            raise SkillPermissionError("不是普通文件")
+        raw = fh.read().decode("utf-8")
     # 只按 \n 判断：恰好一行 JSON 且以 \n 结尾；半行或多行都视为损坏
     if not raw.endswith("\n") or raw.count("\n") != 1:
         raise SkillPermissionError("文件不完整或有多行")
@@ -741,7 +760,7 @@ def load_pending() -> list[str]:
     if PENDING_DIR is None:
         return []
     try:  # 目录不可读时显式告警，而不是像 glob 那样静默返回空
-        with os.scandir(PENDING_DIR) as it:
+        with os.scandir(_dir_fd()) as it:
             names = sorted(e.name for e in it
                            if e.name.endswith(".json") and not e.name.startswith("."))
     except OSError as exc:
@@ -757,7 +776,7 @@ def load_pending() -> list[str]:
         level, report = audit_skill(pending.skill_md, requested_permissions=pending.permissions)
         if level == "P0":
             try:  # 删除失败也不能中断后续文件的恢复；该项照样不入队
-                path.unlink(missing_ok=True)
+                _unlink(path)
                 warnings.append(f"删除 {path.name}: 重新审计为 P0 {report}")
             except OSError as exc:
                 warnings.append(f"跳过 {path.name}: 重新审计为 P0，但删除失败 ({exc})")
@@ -771,13 +790,17 @@ def load_pending() -> list[str]:
     return warnings
 
 
+def _unlink(path: Path) -> None:
+    os.unlink(path.name, dir_fd=_dir_fd())  # 删除也相对固定的目录 fd
+
+
 def _drop_pending_file(title: str) -> str | None:
     """结案前核对磁盘正文仍是入队/加载时那一版，再删除文件；失败则内存不变。"""
     try:
         path = _pending_file(title)
         if _read_pending(path).sha256 != pending_skills[title].sha256:
             raise SkillPermissionError("磁盘上的正文已被改动")
-        path.unlink()
+        _unlink(path)
     except Exception as exc:
         return f"拒绝: 待审批文件核对失败，未结案 ({exc})"
     return None
