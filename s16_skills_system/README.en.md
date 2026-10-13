@@ -511,7 +511,19 @@ A WorkBuddy design principle: **after a multi-step task, capture the workflow as
 3. The tool schema has no approval field. Only the user typing `approve <title>` / `reject <title>` in the terminal can resolve a pending item. approve re-audits and rejects only on P0; if a same-name skill entered the index meanwhile, it rejects and clears the pending item. Submitting the same name again returns "already pending" without overwriting.
 4. `SkillCreate` goes through `authorize_loaded_skill_tool()` like every other tool: with no loaded skill the base policy applies; once skills are loaded, at least one loaded manifest must declare `SkillCreate` (the teaching version takes the union of loaded skills). Skill permissions narrow rather than widen, so to save skills inside a skill flow, declare `SkillCreate` in the manifest.
 
-This is a single-process, in-memory simplification: pending items vanish when the process exits. A real harness persists pending items and asks the user to confirm through a UI.
+By default this is a single-process, in-memory simplification: pending items vanish when the process exits. A real harness persists pending items and asks the user to confirm through a UI.
+
+### Keeping Pending Items Across Restarts (Optional, Off by Default)
+
+`PENDING_DIR` defaults to `None`: no disk reads or writes, behavior exactly as above. After the harness calls `enable_pending_persistence(path)` (the terminal demo uses the `S16_PENDING_DIR` environment variable):
+
+| When | Behavior |
+| --- | --- |
+| P1 enqueue | Writes `<slug>-<sha256(title)[:16]>.json` (`title`, `skill_md`, `permissions`, `skill_md_sha256`) to a temp file, then `os.replace`; a failed write rejects and leaves memory unchanged |
+| `load_pending()` | Reads disk only when called. Filename, single-line JSON, and sha256 must match, and `build_created_skill_md` must rebuild the SKILL.md verbatim; frontmatter permissions win, the `permissions` field is only cross-checked; then re-audit: P0 deletes the file, P1/P2 only enter the queue |
+| approve / reject | Confirms the on-disk body is still the enqueued or loaded version (sha256), then deletes the file; a mismatch refuses and resolves nothing |
+
+Any failed step skips with a warning (fail closed). Boundary: only the write-gate state persists; approved skills stay in memory and vanish on restart, see `examples/self_evolving_skills`. Residual risk: a shell running as the same OS user can write the pending directory, so everything is re-parsed and re-audited and recomputed results win; a forged item gains no more than calling `create_skill` directly.
 
 ### Code Walkthrough
 

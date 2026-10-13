@@ -63,7 +63,7 @@ from mini_workbuddy.chapter_demo import maybe_run_chapter_demo as _wb_maybe_run_
 _wb_maybe_run_chapter_demo(__file__, PROGRESSION)
 from mini_workbuddy.chapter_demo import prepare_chapter_provider as _wb_prepare_chapter_provider
 _wb_prepare_chapter_provider()
-import fnmatch, os, re, sys, time, json
+import fnmatch, hashlib, os, re, sys, time, json, unicodedata
 from pathlib import Path
 from dataclasses import dataclass, field
 
@@ -528,6 +528,8 @@ class PendingSkill:
     requested_at: float
     # 与审计时是同一个 SkillPermissions 对象，approve 时直接复用
     permissions: SkillPermissions = field(default_factory=SkillPermissions)
+    # 只在持久化开启时记录：入队/加载时 skill_md 的 sha256，结案前与磁盘比对
+    sha256: str = ""
 
 
 pending_skills: dict[str, PendingSkill] = {}
@@ -604,8 +606,15 @@ def create_skill(title: str, summary: str, read_when: list[str],
     if level == "P0":
         return f"拒绝创建技能 '{title}': {report}"
     if level == "P1":
-        pending_skills[title] = PendingSkill(title, skill_md, report,
-                                             time.time(), requested_permissions)
+        pending = PendingSkill(title, skill_md, report, time.time(), requested_permissions)
+        if PENDING_DIR is not None:
+            # 先原子写盘，成功后才改内存；写失败时内存与磁盘都不变
+            try:
+                pending.sha256 = _sha256(skill_md)
+                _write_pending(pending)
+            except Exception as exc:
+                return f"拒绝创建技能 '{title}': 待审批项落盘失败 ({exc})"
+        pending_skills[title] = pending
         return f"技能 '{title}' 待用户审批: {report}"
 
     _index_created_skill(skill_md, requested_permissions)
@@ -614,6 +623,10 @@ def create_skill(title: str, summary: str, read_when: list[str],
 
 def approve_skill(title: str) -> str:
     """交互命令 approve：只有用户能把待审批技能移入索引。"""
+    if PENDING_DIR is not None and title in pending_skills:
+        error = _drop_pending_file(title)
+        if error:
+            return error
     pending = pending_skills.pop(title, None)
     if pending is None:
         return f"没有待审批的技能 '{title}'。"
@@ -631,9 +644,128 @@ def approve_skill(title: str) -> str:
 
 def reject_skill(title: str) -> str:
     """交互命令 reject：丢弃待审批技能。"""
+    if PENDING_DIR is not None and title in pending_skills:
+        error = _drop_pending_file(title)
+        if error:
+            return error
     if pending_skills.pop(title, None) is None:
         return f"没有待审批的技能 '{title}'。"
     return f"技能 '{title}' 的写入请求已被拒绝。"
+
+
+# 待审批持久化（默认关闭）：只持久化写闸状态，磁盘内容一律重新校验、重新审计
+PENDING_DIR: Path | None = None  # None 时完全不读写磁盘，行为与内存版一致
+
+
+def enable_pending_persistence(path) -> Path:
+    """显式开启落盘（__main__ 或 harness 调用）；import 时不碰文件系统。"""
+    global PENDING_DIR
+    if type(path) is str:
+        if not path or path != path.strip():
+            raise ValueError(f"pending 目录必须是非空且首尾无空白的路径：{path!r}")
+        path = Path(path)
+    if not isinstance(path, Path):
+        raise TypeError(f"pending 目录必须是 str 或 Path：{type(path).__name__}")
+    path.mkdir(parents=True, exist_ok=True)
+    PENDING_DIR = path.resolve()
+    return PENDING_DIR
+
+
+def _sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _pending_file(title) -> Path:
+    if type(title) is not str:
+        raise SkillPermissionError("title 必须是内建 str")
+    slug = unicodedata.normalize("NFKC", title).lower()
+    slug = re.sub(r"[^a-z0-9_-]", "-", slug)[:40] or "skill"
+    target = PENDING_DIR / f"{slug}-{_sha256(title)[:16]}.json"
+    if target.resolve().parent != PENDING_DIR.resolve():  # 第二层兜底：不许越出目录
+        raise SkillPermissionError("待审批文件路径越出 pending 目录")
+    return target
+
+
+def _write_pending(pending: PendingSkill) -> None:
+    target = _pending_file(pending.title)
+    data = json.dumps({"title": pending.title, "skill_md": pending.skill_md,
+                       "permissions": pending.permissions.as_dict(),
+                       "skill_md_sha256": pending.sha256})
+    tmp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    try:  # 先写临时文件再 os.replace，读者只会看到旧文件或完整新文件
+        with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(data + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, target)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def _read_pending(path: Path) -> PendingSkill:
+    """严格读取一个待审批文件；任何不符都抛异常（fail closed）。"""
+    if path.is_symlink() or not path.is_file():
+        raise SkillPermissionError("不是普通文件")
+    raw = path.read_bytes().decode("utf-8")
+    # 只按 \n 判断：恰好一行 JSON 且以 \n 结尾；半行或多行都视为损坏
+    if not raw.endswith("\n") or raw.count("\n") != 1:
+        raise SkillPermissionError("文件不完整或有多行")
+    data = json.loads(raw[:-1])
+    if type(data) is not dict or set(data) != {
+            "title", "skill_md", "permissions", "skill_md_sha256"} or any(
+            type(data[k]) is not str for k in ("title", "skill_md", "skill_md_sha256")):
+        raise SkillPermissionError("字段缺失、多余或类型错误")
+    title, skill_md = data["title"], data["skill_md"]
+    if _pending_file(title) != path or _sha256(skill_md) != data["skill_md_sha256"]:
+        raise SkillPermissionError("文件名与 title 或 skill_md_sha256 不一致")
+    fm, content = parse_frontmatter(skill_md)[0], skill_md.split("\n---\n\n", 1)[-1]
+    # 重走 build_created_skill_md 的字段校验，且必须逐字重建出同一份 SKILL.md
+    rebuilt, permissions = build_created_skill_md(
+        fm.get("title"), fm.get("summary"), fm.get("read_when"), content,
+        fm.get("permissions"))
+    if rebuilt != skill_md or fm.get("title") != title:
+        raise SkillPermissionError("SKILL.md 不是规范格式或 title 不一致")
+    if permissions.as_dict() != data["permissions"]:  # 磁盘字段只做交叉校验
+        raise SkillPermissionError("permissions 字段与 frontmatter 不一致")
+    return PendingSkill(title, skill_md, "", time.time(), permissions, data["skill_md_sha256"])
+
+
+def load_pending() -> list[str]:
+    """显式恢复（模拟重启后调用）：逐个文件校验并重新审计，返回告警列表。"""
+    if PENDING_DIR is None:
+        return []
+    warnings = []
+    for path in sorted(PENDING_DIR.glob("*.json")):
+        try:
+            pending = _read_pending(path)
+        except Exception as exc:
+            warnings.append(f"跳过 {path.name}: {exc}")
+            continue
+        # 不信任磁盘上的审批状态：重算审计，P0 删除；P2 也只进队列，不自动入索引
+        level, report = audit_skill(pending.skill_md, requested_permissions=pending.permissions)
+        if level == "P0":
+            path.unlink(missing_ok=True)
+            warnings.append(f"删除 {path.name}: 重新审计为 P0 {report}")
+        elif pending.title in pending_skills or any(
+                s.title == pending.title for s in skill_index):
+            warnings.append(f"跳过 {path.name}: 同名技能已存在")
+        else:
+            pending.audit_report = report
+            pending_skills[pending.title] = pending
+    return warnings
+
+
+def _drop_pending_file(title: str) -> str | None:
+    """结案前核对磁盘正文仍是入队/加载时那一版，再删除文件；失败则内存不变。"""
+    try:
+        path = _pending_file(title)
+        if _read_pending(path).sha256 != pending_skills[title].sha256:
+            raise SkillPermissionError("磁盘上的正文已被改动")
+        path.unlink()
+    except Exception as exc:
+        return f"拒绝: 待审批文件核对失败，未结案 ({exc})"
+    return None
 
 
 def audit_skill(
@@ -897,6 +1029,12 @@ if __name__ == "__main__":
     print("=" * 60)
     print("s16: Skills System — SKILL.md frontmatter, 按需加载")
     print("=" * 60)
+
+    # 设置 S16_PENDING_DIR 才开启待审批落盘；默认关闭
+    if os.environ.get("S16_PENDING_DIR") is not None:
+        enable_pending_persistence(os.environ["S16_PENDING_DIR"])
+        for warning in load_pending():
+            print(f"\033[33m[pending] {warning}\033[0m")
 
     # Show skill index
     print(f"\n\033[90m技能索引 ({len(skill_index)} 个技能, 只加载了 frontmatter):\033[0m")

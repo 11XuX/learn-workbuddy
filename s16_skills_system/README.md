@@ -608,7 +608,19 @@ WorkBuddy 的一个设计原则：**完成多步骤任务后，把流程沉淀�
 3. 工具 schema 里没有审批字段，只有用户在终端输入 `approve <title>` / `reject <title>` 才能处理待审批项。approve 会重新审计，只有变成 P0 才拒绝；如果这期间已有同名技能进了索引，也会拒绝并清掉待审批项。同名技能再次提交返回「已在待审批」，不覆盖。
 4. `SkillCreate` 和其他工具一样经过 `authorize_loaded_skill_tool()`：没有加载技能时走基础策略；加载技能后，至少一个已加载技能的 manifest 声明了 `SkillCreate` 才允许（教学版对已加载技能取并集）。技能权限只会收窄、不会放宽，想在技能流程里保存新技能，就要在 manifest 里显式声明 `SkillCreate`。
 
-这是单进程、内存态的简化：进程退出后待审批项随之消失。真实 harness 会把待审批项持久化，并通过 UI 让用户确认。
+默认是单进程、内存态的简化：进程退出后待审批项随之消失。真实 harness 会把待审批项持久化，并通过 UI 让用户确认。
+
+### 待审批项跨重启保留（可选，默认关闭）
+
+`PENDING_DIR` 默认为 `None`，此时不读写磁盘，行为和上面完全一致。harness 显式调用 `enable_pending_persistence(path)`（终端演示里设置环境变量 `S16_PENDING_DIR`）后：
+
+| 时机 | 行为 |
+| --- | --- |
+| P1 入队 | 写 `<slug>-<sha256(title)[:16]>.json`（`title`、`skill_md`、`permissions`、`skill_md_sha256`），先写临时文件再 `os.replace`；写失败就拒绝，内存不变 |
+| `load_pending()` | 只在显式调用时读盘。文件名、单行 JSON、sha256 都要对得上，SKILL.md 必须能被 `build_created_skill_md` 逐字重建；权限以 frontmatter 为准，`permissions` 字段只做交叉校验；然后重新审计，P0 删除文件，P1/P2 只进队列 |
+| approve / reject | 先确认磁盘正文还是入队或加载时那一版（sha256），再删文件；对不上就拒绝，不结案 |
+
+任何一步失败都会跳过并告警（fail closed）。边界：这里只持久化写闸状态，已批准的技能仍是内存态，重启即消失，见 `examples/self_evolving_skills`。残余风险：同一 OS 用户的 shell 能写 pending 目录，所以一律重新解析、重新审计，以重算结果为准；伪造项拿到的能力不超过直接调用 `create_skill`。
 
 ---
 
