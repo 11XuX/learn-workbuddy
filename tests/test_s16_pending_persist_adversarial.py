@@ -357,3 +357,41 @@ def test_pending_temp_symlink_never_overwrites_outside_file(
     else:
         assert "落盘失败" in result
         assert not target.exists()
+
+
+def test_pending_dir_replaced_by_symlink_must_not_write_outside(s16, tmp_path):
+    """After enable, swapping PENDING_DIR for a symlink to an external folder
+    must not let create_skill overwrite a same-named sentinel outside the
+    original directory identity (pin dir fd at enable; relative mkstemp/replace).
+    """
+    original = enable(s16, tmp_path)
+    assert original.is_dir() and not original.is_symlink()
+
+    external = tmp_path / "external"
+    external.mkdir()
+    title = "dir-swap-candidate"
+    victim = external / filename(title)
+    sentinel = b"external sentinel must survive\n"
+    victim.write_bytes(sentinel)
+
+    # Move real pending aside; plant PENDING_DIR path as symlink → external.
+    # Both sides of resolve() then agree on external, so parent check passes.
+    displaced = tmp_path / "pending-displaced"
+    original.rename(displaced)
+    Path(s16.PENDING_DIR).symlink_to(external)
+
+    before_index = list(s16.skill_index)
+    before_seeds = dict(s16.SEED_SKILLS)
+    before_pending = dict(s16.pending_skills)
+
+    result = s16.create_skill(title, "fetch", ["fetch"], BODY, NET)
+
+    assert victim.read_bytes() == sentinel, (
+        "create_skill must not overwrite files reached by replacing "
+        "PENDING_DIR with an external symlink"
+    )
+    assert s16.skill_index == before_index
+    assert s16.SEED_SKILLS == before_seeds
+    if "落盘失败" in result or "拒绝" in result:
+        assert title not in s16.pending_skills
+        assert s16.pending_skills == before_pending
