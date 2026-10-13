@@ -228,14 +228,21 @@ def test_p0_unlink_failure_warns_and_continues(s16, tmp_path, monkeypatch):
     write(danger, data)
     s16.pending_skills.clear()
     before_index = list(s16.skill_index)
-    real_unlink = Path.unlink
+    import os
 
-    def denied(path, *args, **kwargs):
-        if path == danger:
+    real_unlink = os.unlink
+    dir_id = (directory.stat().st_dev, directory.stat().st_ino)
+
+    def denied(name, *args, dir_fd=None, **kwargs):
+        if (
+            dir_fd is not None
+            and os.fspath(name) == danger.name
+            and (os.fstat(dir_fd).st_dev, os.fstat(dir_fd).st_ino) == dir_id
+        ):
             raise PermissionError("injected P0 deletion failure")
-        return real_unlink(path, *args, **kwargs)
+        return real_unlink(name, *args, dir_fd=dir_fd, **kwargs)
 
-    monkeypatch.setattr(Path, "unlink", denied)
+    monkeypatch.setattr(os, "unlink", denied)
     # Current implementation raises here instead of returning warnings.
     warnings = s16.load_pending()
     assert warnings
@@ -258,14 +265,21 @@ def test_resolution_checks_disk_and_preserves_memory(
     if damage == "missing":
         path.unlink()
     elif damage == "unlink":
-        real_unlink = Path.unlink
+        import os
 
-        def denied(target, *args, **kwargs):
-            if target == path:
+        real_unlink = os.unlink
+        dir_id = (directory.stat().st_dev, directory.stat().st_ino)
+
+        def denied(name, *args, dir_fd=None, **kwargs):
+            if (
+                dir_fd is not None
+                and os.fspath(name) == path.name
+                and (os.fstat(dir_fd).st_dev, os.fstat(dir_fd).st_ino) == dir_id
+            ):
                 raise PermissionError("injected resolution deletion failure")
-            return real_unlink(target, *args, **kwargs)
+            return real_unlink(name, *args, dir_fd=dir_fd, **kwargs)
 
-        monkeypatch.setattr(Path, "unlink", denied)
+        monkeypatch.setattr(os, "unlink", denied)
     else:
         data = read(path)
         if damage == "body":
@@ -395,3 +409,32 @@ def test_pending_dir_replaced_by_symlink_must_not_write_outside(s16, tmp_path):
     if "落盘失败" in result or "拒绝" in result:
         assert title not in s16.pending_skills
         assert s16.pending_skills == before_pending
+
+
+def test_pending_dir_swapped_before_delete_keeps_outside_file(s16, tmp_path):
+    """After enable, swapping PENDING_DIR for a symlink to an external folder
+    holding a byte-identical same-named file must not let approve_skill delete
+    that external file (resolution read/delete must use the pinned dir fd).
+    """
+    original = enable(s16, tmp_path)
+    title = "swap-delete-candidate"
+    create(s16, title)
+    real = original / filename(title)
+    content = real.read_bytes()
+
+    external = tmp_path / "external-delete"
+    external.mkdir()
+    victim = external / filename(title)
+    victim.write_bytes(content)
+
+    displaced = tmp_path / "pending-displaced-delete"
+    original.rename(displaced)
+    Path(s16.PENDING_DIR).symlink_to(external)
+
+    s16.approve_skill(title)
+
+    assert victim.exists(), (
+        "resolution must not delete a same-named file reached by replacing "
+        "PENDING_DIR with an external symlink"
+    )
+    assert victim.read_bytes() == content
