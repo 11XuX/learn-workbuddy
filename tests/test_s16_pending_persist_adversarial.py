@@ -438,3 +438,81 @@ def test_pending_dir_swapped_before_delete_keeps_outside_file(s16, tmp_path):
         "PENDING_DIR with an external symlink"
     )
     assert victim.read_bytes() == content
+
+
+def test_reenable_resolve_failure_keeps_fd_ownership(
+    s16, tmp_path, monkeypatch
+):
+    os = s16.os
+    directory = enable(s16, tmp_path)
+    create(s16)
+    baseline = state(s16)
+    old_binding = s16._PENDING_FD
+    old_identity = os.fstat(old_binding[1])
+    new_directory = tmp_path / "pending-new"
+    opened = []
+    real_open = os.open
+    real_resolve = Path.resolve
+
+    def guarded_resolve(path, *args, **kwargs):
+        if path == new_directory and opened:
+            raise OSError("injected resolve failure after directory open")
+        return real_resolve(path, *args, **kwargs)
+
+    def tracked_open(path, flags, *args, **kwargs):
+        fd = real_open(path, flags, *args, **kwargs)
+        if flags & os.O_DIRECTORY and Path(path) == new_directory:
+            opened.append(fd)
+        return fd
+
+    try:
+        with monkeypatch.context() as guard:
+            guard.setattr(Path, "resolve", guarded_resolve)
+            guard.setattr(os, "open", tracked_open)
+            try:
+                s16.enable_pending_persistence(new_directory)
+            except OSError as exc:
+                assert "injected resolve failure" in str(exc)
+                failed = True
+            else:
+                failed = False
+
+        assert opened
+        assert state(s16) == baseline
+
+        if failed:
+            assert s16.PENDING_DIR == directory
+            assert s16._PENDING_FD == old_binding
+            active = os.fstat(s16._PENDING_FD[1])
+            assert (active.st_dev, active.st_ino) == (
+                old_identity.st_dev, old_identity.st_ino
+            )
+        else:
+            # A single resolve before open avoids the injected failure.
+            assert s16.PENDING_DIR == new_directory.resolve()
+            active = os.fstat(s16._PENDING_FD[1])
+            expected = new_directory.stat()
+            assert (active.st_dev, active.st_ino) == (
+                expected.st_dev, expected.st_ino
+            )
+
+        active_fd = s16._PENDING_FD[1]
+        for fd in set(opened + [old_binding[1]]) - {active_fd}:
+            with pytest.raises(OSError) as caught:
+                os.fstat(fd)
+            assert caught.value.errno == 9  # EBADF: unowned fd was closed
+
+        if failed:
+            assert "已经用户批准" in s16.approve_skill("candidate")
+            assert not (directory / filename("candidate")).exists()
+    finally:
+        # Existing fixture does not manage _PENDING_FD; clean up this test.
+        fds = set(opened + [old_binding[1], s16._PENDING_FD[1]])
+        s16._PENDING_FD = (None, -1)
+        s16.PENDING_DIR = None
+        for fd in fds:
+            if fd >= 0:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
