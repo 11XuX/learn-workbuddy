@@ -67,3 +67,14 @@ def test_resume_once_restores_scheduled_next_run(s22):
     auto = manager.view(aid)
     assert auto["status"] == "ACTIVE"
     assert row["next_run"] == scheduled
+
+
+def test_control_finished_once_stays_unscheduled_after_resume(s22):
+    db = s22.init_db()
+    manager = s22.AutomationManager(db)
+    scheduled = (datetime.now() - timedelta(seconds=5)).isoformat()
+    aid = manager.create("once", "p", "once", scheduled_at=scheduled)
+    s22.Scheduler(db, manager).check_and_run()  # runs once, then auto-PAUSED
+    manager.update_status(aid, "ACTIVE")
+    sql = "SELECT next_run FROM automation_runtime_state WHERE automation_id=?"
+    assert db.execute(sql, (aid,)).fetchone()["next_run"] is None
