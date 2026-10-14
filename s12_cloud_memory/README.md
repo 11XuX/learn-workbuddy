@@ -421,6 +421,21 @@ assert "conv-1" in {r.memory_id for r in store.read_all()}
 assert "conv-1" not in {r.memory_id for r in store.active_records()}
 ```
 
+不需要 API key：运行本章 REPL，输入 `/retract-demo`。它在临时目录里建一个独立 store（固定时间的种子数据），走一遍「召回 → 撤回 → 召回不到 → 模拟重启仍召回不到 → 审计流里原记录还在」，再演示两条非法撤回被拒。它不写默认 store、不读写 `WORKBUDDY_HOME`，也不走 `retract_memory` 工具入口（工具会写默认 store）。默认 store 改为首轮对话时才初始化。一次实际输出（id 随种子数据变化）：
+
+```text
+[before] recall 'explicit user preferences': conversation-003, conversation-005
+[before] read_all=7 active=7
+[harness] retract conversation-003 -> retraction-beed129bfaf68007d1ae6e27
+[after] recall 'explicit user preferences': conversation-005
+[after] read_all=8 active=6; conversation-003 still in read_all: True
+[restart] recall 'explicit user preferences': conversation-005
+[reject] unknown id: rejected
+[reject] retraction event: rejected
+```
+
+已知限制：首次运行、默认 store 尚未初始化时，启动横幅不显示 profile 快照行。
+
 ### 架构对照
 
 | 视图 | 方法 | 包含撤回的内容 |
