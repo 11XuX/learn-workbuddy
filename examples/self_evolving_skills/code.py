@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 import tempfile
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -653,18 +654,25 @@ def render_skill(
     return "\n".join(lines)
 
 
-def seed_demo_trajectories(store: EvolutionStore) -> list[Trajectory]:
+def seed_demo_trajectories(store: EvolutionStore, seed: str = "baseline") -> list[Trajectory]:
     shared_steps = [
         {"intent": "Inspect the project test configuration.", "tool": "read_file", "ok": True},
         {"intent": "Run the smallest relevant test target.", "tool": "bash", "ok": True},
         {"intent": "Record the verification result for review.", "tool": "bash", "ok": True},
     ]
+    # "revised" keeps the first two steps and only rewords step 3 (same tool),
+    # so the same task family gets a new candidate and, once approved, a v2.
+    revised_steps = shared_steps[:2] + [
+        {"intent": "Summarize the test outcome in the review notes.", "tool": "bash", "ok": True},
+    ]
+    steps = revised_steps if seed == "revised" else shared_steps
+    prefix = "revised-" if seed == "revised" else ""
     specs = [
-        ("train-run-1", "train", "success", shared_steps),
-        ("train-run-2", "train", "success", shared_steps),
-        ("validation-run-1", "validation", "success", shared_steps),
+        (f"{prefix}train-run-1", "train", "success", steps),
+        (f"{prefix}train-run-2", "train", "success", steps),
+        (f"{prefix}validation-run-1", "validation", "success", steps),
         (
-            "failed-run-1",
+            f"{prefix}failed-run-1",
             "train",
             "failure",
             [
@@ -690,10 +698,12 @@ def seed_demo_trajectories(store: EvolutionStore) -> list[Trajectory]:
     return [store.load_trajectory(path) for path in paths]
 
 
-def run_demo(home: Path, *, approve: bool = False, approved_by: str = "demo-user") -> dict:
+def run_demo(
+    home: Path, *, approve: bool = False, approved_by: str = "demo-user", seed: str = "baseline"
+) -> dict:
     store = EvolutionStore(home)
     pipeline = SkillEvolutionPipeline(store)
-    trajectories = seed_demo_trajectories(store)
+    trajectories = seed_demo_trajectories(store, seed)
     training, rejected = pipeline.triage(
         trajectories,
         task_family="python-test-validation",
@@ -743,11 +753,53 @@ def main() -> None:
     )
     parser.add_argument(
         "--approved-by",
-        default="demo-user",
-        help="identity recorded when --approve is supplied",
+        default=None,
+        help="identity recorded for --approve (default: demo-user) or --set-active (required)",
     )
+    parser.add_argument(
+        "--seed",
+        choices=["baseline", "revised"],
+        default=None,
+        help="demo trajectories to seed (default: baseline); revised yields a new candidate",
+    )
+    parser.add_argument(
+        "--set-active",
+        type=int,
+        metavar="N",
+        help="switch the active version of an existing skill (rollback or roll forward)",
+    )
+    parser.add_argument("--reason", help="why the active version changes (required with --set-active)")
     args = parser.parse_args()
-    manifest = run_demo(args.home, approve=args.approve, approved_by=args.approved_by)
+
+    if args.set_active is not None:
+        if args.approve or args.seed is not None:
+            parser.error("--set-active cannot be combined with --approve or --seed")
+        if args.approved_by is None or args.reason is None:
+            parser.error("--set-active requires --approved-by and --reason")
+        store = EvolutionStore(args.home)
+        try:
+            path = store.set_active_version(
+                "python-test-validation", args.set_active, approved_by=args.approved_by, reason=args.reason
+            )
+        except EvolutionError as exc:
+            print(f"activation rejected: {exc}", file=sys.stderr)
+            sys.exit(1)
+        print("Active version:", args.set_active)
+        print("Active skill:", path)
+        print("Audit:", store.audit_path)
+        return
+
+    # Fall back only when the flag is absent; an empty value must still be rejected.
+    approved_by = "demo-user" if args.approved_by is None else args.approved_by
+    if args.approve and not approved_by.strip():
+        parser.error("explicit approved_by is required")
+    try:
+        manifest = run_demo(
+            args.home, approve=args.approve, approved_by=approved_by, seed=args.seed or "baseline"
+        )
+    except EvolutionError as exc:
+        print(f"promotion rejected: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     print("Self-evolving skills demo")
     print("Home:", manifest["home"])
