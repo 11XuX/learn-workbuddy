@@ -255,6 +255,13 @@ class AutomationManager:
                     "UPDATE automation_runtime_state SET next_run=? WHERE automation_id=?",
                     (next_run, auto_id)
                 )
+            elif auto and auto["schedule_type"] == "once":
+                # Restore the fixed time only if the once task has not run yet
+                self.db.execute(
+                    "UPDATE automation_runtime_state SET next_run=? "
+                    "WHERE automation_id=? AND last_run IS NULL",
+                    (auto["scheduled_at"], auto_id)
+                )
         self.db.commit()
 
     def soft_delete(self, auto_id: str):
