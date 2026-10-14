@@ -175,3 +175,18 @@ def test_plain_approve_still_signs_as_demo_user(tmp_path):
     assert _manifest(home)["history"][0]["approved_by"] == "demo-user"
     promoted = [e for e in _audit(home) if e["action"] == "skill_promoted"]
     assert promoted[-1]["details"]["approved_by"] == "demo-user"
+
+
+def test_adversarial_revised_seed_changes_training_and_held_out(tmp_path, evolution):
+    def by_split(seed: str) -> dict[str, set]:
+        store = evolution.EvolutionStore(tmp_path / seed)
+        found: dict[str, set] = {}
+        for item in evolution.seed_demo_trajectories(store, seed):
+            if item.successful:
+                found.setdefault(item.split, set()).add(item.signature)
+        return found
+
+    base, revised = by_split("baseline"), by_split("revised")
+    assert revised["train"] == revised["validation"]
+    assert revised["train"].isdisjoint(base["train"])
+    assert revised["validation"].isdisjoint(base["validation"])
