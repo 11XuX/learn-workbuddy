@@ -78,3 +78,19 @@ def test_control_finished_once_stays_unscheduled_after_resume(s22):
     manager.update_status(aid, "ACTIVE")
     sql = "SELECT next_run FROM automation_runtime_state WHERE automation_id=?"
     assert db.execute(sql, (aid,)).fetchone()["next_run"] is None
+
+
+def test_adversarial_resumed_once_fires_exactly_once(s22):
+    # End to end: pause -> resume -> scheduler fires it once; a second
+    # resume after the run must not schedule it again.
+    db = s22.init_db()
+    manager = s22.AutomationManager(db)
+    scheduled = (datetime.now() - timedelta(seconds=5)).isoformat()
+    aid = manager.create("once", "p", "once", scheduled_at=scheduled)
+    scheduler = s22.Scheduler(db, manager)
+    manager.update_status(aid, "PAUSED")
+    assert scheduler.check_and_run() == 0
+    manager.update_status(aid, "ACTIVE")
+    assert scheduler.check_and_run() == 1
+    manager.update_status(aid, "ACTIVE")
+    assert scheduler.check_and_run() == 0
