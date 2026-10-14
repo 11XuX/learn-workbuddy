@@ -290,6 +290,19 @@ assert "conv-1" in {r.memory_id for r in store.read_all()}
 assert "conv-1" not in {r.memory_id for r in store.active_records()}
 ```
 
+No API key needed: run the chapter REPL and type `/retract-demo`. It builds a separate store in a temporary directory (seed data with fixed timestamps), walks through "recall → retract → miss → simulated restart still misses → original record still in the audit stream", then shows two invalid retractions being rejected. It never writes the default store, never reads or writes `WORKBUDDY_HOME`, and does not go through the `retract_memory` tool (the tool writes the default store). One real run (ids depend on the seed data):
+
+```text
+[before] recall 'explicit user preferences': conversation-003, conversation-005
+[before] read_all=7 active=7
+[harness] retract conversation-003 -> retraction-beed129bfaf68007d1ae6e27
+[after] recall 'explicit user preferences': conversation-005
+[after] read_all=8 active=6; conversation-003 still in read_all: True
+[restart] recall 'explicit user preferences': conversation-005
+[reject] unknown id: rejected
+[reject] retraction event: rejected
+```
+
 ### Architecture Mapping
 
 | View | Method | Includes retracted content |

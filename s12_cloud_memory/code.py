@@ -33,6 +33,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import unicodedata
 import uuid
 from contextlib import contextmanager
@@ -1115,6 +1116,61 @@ def retract_memory(memory_id: str, reason: str) -> str:
     )
 
 
+RETRACT_DEMO_AS_OF = datetime(2026, 10, 1, tzinfo=timezone.utc)
+
+
+def run_retract_demo() -> list[str]:
+    """Offline walkthrough: retraction leaves the active view, not the audit stream.
+
+    Uses its own temporary store with fixed timestamps, so it never touches the
+    default store under WORKBUDDY_HOME and its output is deterministic.
+    """
+
+    query = "explicit user preferences"
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "records.jsonl"
+        store = RemoteMemoryStore(path, user_id="demo-user")
+        _seed_store(store, as_of=RETRACT_DEMO_AS_OF)
+
+        def hits(target_store: RemoteMemoryStore) -> list[str]:
+            result = RecallEngine(target_store).recall(
+                query, query_id="retract-demo", as_of=RETRACT_DEMO_AS_OF
+            )
+            return [hit.memory_id for hit in result.hits]
+
+        def counts() -> str:
+            return f"read_all={len(store.read_all())} active={len(store.active_records())}"
+
+        before = hits(store)
+        target = before[0]
+        lines = [f"[before] recall {query!r}: {', '.join(before)}", f"[before] {counts()}"]
+        source = MemorySource(
+            source_id="retract-demo-command",
+            source_type="user_command",
+            title="/retract-demo",
+            captured_at=_iso(RETRACT_DEMO_AS_OF),
+        )
+        event = store.retract(
+            target, reason="user asked to forget", source=source,
+            stored_at=RETRACT_DEMO_AS_OF,
+        )
+        audit = {record.memory_id for record in store.read_all()}
+        lines += [
+            f"[harness] retract {target} -> {event.memory_id}",
+            f"[after] recall {query!r}: {', '.join(hits(store)) or '(none)'}",
+            f"[after] {counts()}; {target} still in read_all: {target in audit}",
+        ]
+        restarted = RemoteMemoryStore(path, user_id="demo-user")
+        lines.append(f"[restart] recall {query!r}: {', '.join(hits(restarted)) or '(none)'}")
+        for label, bad_id in (("unknown id", "no-such-memory"), ("retraction event", event.memory_id)):
+            try:
+                store.retract(bad_id, reason="demo", source=source, stored_at=RETRACT_DEMO_AS_OF)
+                lines.append(f"[reject] {label}: accepted")
+            except RemoteMemoryValidationError:
+                lines.append(f"[reject] {label}: rejected")
+        return lines
+
+
 def safe_path(value: str) -> Path:
     path = (WORKDIR / value).resolve()
     if not path.is_relative_to(WORKDIR):
@@ -1297,6 +1353,7 @@ def main() -> None:
             f"at {profile.source.captured_at}"
         )
     print("Try: continue the previous layered memory design discussion")
+    print("Offline: /retract-demo shows retract -> recall miss -> audit kept (no API key)")
 
     messages: list[dict] = []
     while True:
@@ -1307,6 +1364,13 @@ def main() -> None:
         if query.lower() in {"q", "quit", "exit"}:
             break
         if not query:
+            continue
+        if query == "/retract-demo":
+            try:
+                for line in run_retract_demo():
+                    print(line)
+            except Exception as exc:
+                print(f"retract-demo failed: {exc}")
             continue
         messages.append({"role": "user", "content": query})
         agent_loop(messages)
