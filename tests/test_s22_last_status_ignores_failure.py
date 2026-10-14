@@ -71,3 +71,28 @@ def test_last_status_reflects_failed_run(s22):
     ).fetchone())
     assert run["status"] == "failed"
     assert state["last_status"] == "failed"
+
+
+def test_last_status_reflects_successful_run(s22, monkeypatch):
+    text = type("Block", (), {"type": "text", "text": "ok"})()
+    response = type("Response", (), {"content": [text]})()
+    monkeypatch.setattr(s22.client.messages, "create", lambda **kwargs: response)
+    db = s22.init_db()
+    manager = s22.AutomationManager(db)
+    scheduler = s22.Scheduler(db, manager)
+    aid = manager.create("t", "p", "recurring", rrule="FREQ=DAILY;INTERVAL=1")
+    past = (datetime.now() - timedelta(minutes=1)).isoformat()
+    db.execute(
+        "UPDATE automation_runtime_state SET next_run=? WHERE automation_id=?", (past, aid)
+    )
+    db.commit()
+    scheduler.check_and_run()
+    run = dict(db.execute(
+        "SELECT status FROM automation_runs WHERE automation_id=? ORDER BY id DESC LIMIT 1",
+        (aid,),
+    ).fetchone())
+    state = dict(db.execute(
+        "SELECT last_status FROM automation_runtime_state WHERE automation_id=?", (aid,)
+    ).fetchone())
+    assert run["status"] == "success"
+    assert state["last_status"] == "success"
