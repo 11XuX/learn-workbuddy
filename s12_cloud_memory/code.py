@@ -1041,14 +1041,13 @@ def _seed_store(store: RemoteMemoryStore, *, as_of: datetime | None = None) -> N
         )
 
 
-def create_default_store(*, seed: bool = True) -> RemoteMemoryStore:
+def create_default_store() -> RemoteMemoryStore:
     user_id = os.getenv("WORKBUDDY_USER_ID", "local-user")
     scope = _scope_id(user_id)
     store = RemoteMemoryStore(
         DEFAULT_REMOTE_ROOT / "users" / scope / "records.jsonl", user_id=user_id
     )
-    if seed:
-        _seed_store(store)
+    _seed_store(store)
     return store
 
 
@@ -1342,9 +1341,7 @@ def agent_loop(messages: list[dict]) -> None:
 
 
 def main() -> None:
-    # Banner reads only; the default store is seeded on the first chat turn,
-    # so /retract-demo never writes under WORKBUDDY_HOME.
-    store = create_default_store(seed=False)
+    store, _recall, _system = default_runtime()
     print("s12: Remote Memory — stored records vs recalled context")
     print(f"user scope: {store.user_scope}")
     print(f"durable store: {store.path}")

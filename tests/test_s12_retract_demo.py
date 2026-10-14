@@ -77,18 +77,23 @@ def _tree(root: Path) -> dict[str, bytes]:
     }
 
 
-def test_repl_retract_demo_offline_keeps_workbuddy_home_unchanged(tmp_path):
-    home = tmp_path / "home"
-    (home / "keep").mkdir(parents=True)
-    (home / "keep" / "note.txt").write_bytes(b"unchanged")
-    snapshot = _tree(home)
+def _run_repl(home: Path, stdin: str) -> subprocess.CompletedProcess:
     env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
     env |= {"MODEL_ID": "offline", "WORKBUDDY_HOME": str(home)}
     proc = subprocess.run(
-        [sys.executable, str(CODE)], input="/retract-demo\nq\n",
+        [sys.executable, str(CODE)], input=stdin,
         capture_output=True, text=True, env=env, cwd=ROOT, timeout=60,
     )
     assert proc.returncode == 0, proc.stderr
+    return proc
+
+
+def test_repl_retract_demo_offline_keeps_workbuddy_home_unchanged(tmp_path):
+    home = tmp_path / "home"
+    _run_repl(home, "q\n")  # first launch initializes the default store
+    snapshot = _tree(home)
+    assert snapshot
+    proc = _run_repl(home, "/retract-demo\nq\n")
     assert "retract-demo failed" not in proc.stdout
     lines = [line.split("s12 >> ")[-1] for line in proc.stdout.splitlines()]
     _check_demo([line for line in lines if line.startswith("[")])
