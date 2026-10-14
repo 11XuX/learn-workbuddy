@@ -96,3 +96,34 @@ def test_last_status_reflects_successful_run(s22, monkeypatch):
     ).fetchone())
     assert run["status"] == "success"
     assert state["last_status"] == "success"
+
+
+def test_last_status_per_automation_in_one_tick(s22, monkeypatch):
+    """Adversarial: mixed outcomes in one tick must not leak across automations."""
+    text = type("Block", (), {"type": "text", "text": "ok"})()
+    response = type("Response", (), {"content": [text]})()
+
+    def fake_create(**kwargs):
+        if kwargs["messages"][0]["content"] == "boom":
+            raise RuntimeError("boom")
+        return response
+
+    monkeypatch.setattr(s22.client.messages, "create", fake_create)
+    db = s22.init_db()
+    manager = s22.AutomationManager(db)
+    scheduler = s22.Scheduler(db, manager)
+    ids = {p: manager.create(p, p, "recurring", rrule="FREQ=DAILY;INTERVAL=1")
+           for p in ("boom", "fine")}
+    past = (datetime.now() - timedelta(minutes=1)).isoformat()
+    db.execute("UPDATE automation_runtime_state SET next_run=?", (past,))
+    db.commit()
+    scheduler.check_and_run()
+    for prompt, want in (("boom", "failed"), ("fine", "success")):
+        run = db.execute(
+            "SELECT status FROM automation_runs WHERE automation_id=?", (ids[prompt],)
+        ).fetchone()
+        state = db.execute(
+            "SELECT last_status FROM automation_runtime_state WHERE automation_id=?",
+            (ids[prompt],),
+        ).fetchone()
+        assert (run["status"], state["last_status"]) == (want, want)
