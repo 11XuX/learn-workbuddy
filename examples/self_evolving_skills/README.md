@@ -73,6 +73,19 @@ store.active_skill_path("python-test-validation")  # -> skills/python-test-valid
 
 回滚到 v1 后再次批准 v2 的 candidate 只会返回 v2 路径，不会改变生效版本；要重新启用 v2，同样走 `set_active_version()`。
 
+命令行上走一遍（同一个 `--home`）：
+
+```bash
+H=/tmp/learn-workbuddy-self-evolution
+python3 examples/self_evolving_skills/code.py --home $H --approve --approved-by alice                 # v1
+python3 examples/self_evolving_skills/code.py --home $H --seed revised --approve --approved-by alice  # v2，成为生效版本
+python3 examples/self_evolving_skills/code.py --home $H --set-active 1 --approved-by bob --reason "v2-regression-in-step-3"  # 回到 v1
+```
+
+为什么需要 `--seed revised`：重复 `--approve` 会种同一组轨迹、得到同一个 candidate，`promote()` 幂等返回 v1，造不出 v2。`revised` 只把第 3 步的 intent 换一句（工具仍是 `bash`），训练和 held-out 轨迹都用这组新步骤，于是在同一个 skill 下产生新 candidate。默认 `--seed baseline` 的行为和输出不变。
+
+`--set-active N` 不种轨迹、不蒸馏、不评测，只调用 `set_active_version()`，缺 `--approved-by` 或 `--reason`、或与 `--approve` / `--seed` 同用时由 argparse 拒绝（退出码 2）；库层拒绝（版本不存在、文件被改过等）打印 `activation rejected: ...`，退出码 1。也可以 `--set-active 2` 前滚。`--approve` 不带 `--approved-by` 时署名为 `demo-user`；显式给空串或纯空白会在写任何文件前被拒绝。
+
 逐字节核对证明的是“发布产物与候选证据一致”，不是密码学签名：如果 `candidate.json` 和 `SKILL.md` 被一起改成一致的样子，这一层核对防不住。和 `promote()` 一样，本示例也不处理多个进程并发写 manifest 的情况。
 
 ## 运行
