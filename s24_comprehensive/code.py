@@ -462,7 +462,7 @@ def classify_command(cmd: str) -> str:
         if b in cmd:
             return "BLOCKED"
     for z in HIGH_RISK:
-        if z in cmd and "rm" in cmd:
+        if z in cmd and ("rm" in cmd or "mv" in cmd or "delete" in cmd):
             return "HIGH_RISK"
     if any(d in cmd for d in ["rm ", "rmdir", "mv ", "> "]):
         return "DESTRUCTIVE"
