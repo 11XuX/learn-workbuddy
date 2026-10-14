@@ -53,8 +53,10 @@ def chapters(tmp_path):
         sys.modules.pop(n24, None)
 
 
-def test_mv_desktop_is_high_risk_blocked_like_s23(chapters, tmp_path):
+def test_mv_desktop_is_high_risk_blocked_like_s23(chapters, tmp_path, monkeypatch):
     s23, s24 = chapters
+    calls = []
+    monkeypatch.setattr(s24.subprocess, "run", lambda *a, **k: calls.append(a))
     cmd = f"mv {tmp_path / 'Desktop' / 'a.txt'} /tmp/a.txt"
     (tmp_path / "Desktop").mkdir()
     (tmp_path / "Desktop" / "a.txt").write_text("x", encoding="utf-8")
@@ -63,3 +65,4 @@ def test_mv_desktop_is_high_risk_blocked_like_s23(chapters, tmp_path):
     assert s24.classify_command(cmd) == "HIGH_RISK"
     out = s24.run_bash(cmd)
     assert out.startswith("Error: HIGH_RISK"), out
+    assert calls == []
