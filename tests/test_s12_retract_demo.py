@@ -125,3 +125,24 @@ def test_demo_error_propagates_and_temp_dir_is_cleaned(s12, monkeypatch):
         s12.run_retract_demo()
     assert len(seen) == 1
     assert not seen[0].exists()
+
+
+def test_adversarial_banner_keeps_profile_snapshot_and_no_temp_paths(tmp_path):
+    # 6b19e24 dropped the upstream "profile snapshot" banner line on first launch.
+    proc = _run_repl(tmp_path / "home", "/retract-demo\nq\n")
+    assert "profile snapshot: " in proc.stdout
+    assert "/retract-demo" in proc.stdout.split("s12 >> ")[0]
+    demo = proc.stdout.split("s12 >> ", 1)[1]
+    assert "records.jsonl" not in demo and str(tmp_path) not in demo
+
+
+def test_adversarial_repl_survives_demo_failure(s12, monkeypatch, capsys):
+    def boom():
+        raise RuntimeError("injected demo failure")
+
+    feed = iter(["/retract-demo", "/retract-demo", "q"])
+    monkeypatch.setattr(s12, "run_retract_demo", boom)
+    monkeypatch.setattr("builtins.input", lambda *_: next(feed))
+    s12.main()
+    out = capsys.readouterr().out
+    assert out.count("retract-demo failed: injected demo failure") == 2
