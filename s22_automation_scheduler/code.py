@@ -319,8 +319,8 @@ class Scheduler:
         count = 0
         for auto in rows:
             print(f"\n  执行: {auto['name']} ({auto['id']})")
-            self._execute(auto)
-            self._update_state_after_run(auto)
+            status = self._execute(auto)
+            self._update_state_after_run(auto, status)
             count += 1
 
         print(f"\n  调度器完成: 执行了 {count} 个任务。")
@@ -369,6 +369,7 @@ class Scheduler:
             self.db.commit()
             print(f"    完成: {completed}")
             print(f"    输出: {output_text[:200]}...")
+            return "success"
 
         except Exception as e:
             completed = datetime.now().isoformat()
@@ -378,8 +379,9 @@ class Scheduler:
             )
             self.db.commit()
             print(f"    失败: {e}")
+            return "failed"
 
-    def _update_state_after_run(self, auto):
+    def _update_state_after_run(self, auto, status):
         """Update runtime state after execution."""
         now = datetime.now()
 
@@ -396,9 +398,9 @@ class Scheduler:
             next_run = calculate_next_run(auto["rrule"], now)
 
         self.db.execute(
-            "UPDATE automation_runtime_state SET last_run=?, next_run=?, last_status='success' "
+            "UPDATE automation_runtime_state SET last_run=?, next_run=?, last_status=? "
             "WHERE automation_id=?",
-            (now.isoformat(), next_run, auto["id"])
+            (now.isoformat(), next_run, status, auto["id"])
         )
         self.db.commit()
 
