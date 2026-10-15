@@ -71,3 +71,21 @@ def test_bash_prefix_still_hits_command_policy(tmp_path: Path) -> None:
     assert len(errors) == 1 and errors[0][0] == "bash", errors
     assert "denied" in errors[0][1]
     assert (tmp_path / "x").exists()
+
+
+def test_adversarial_keyword_command_still_hits_protected_path_policy(
+    tmp_path: Path,
+) -> None:
+    config = HarnessConfig(root_dir=tmp_path / "home")
+    storage = Storage(config)
+    agent = MiniAgent(storage, ToolRegistry(config, storage), EventBus())
+    session = storage.create_session(str(tmp_path), "bash protected")
+
+    agent.prompt(session, "BASH cat /etc/passwd | while read l; do echo list files; done")
+
+    events = storage.read_transcript(session)
+    calls = [e["tool"] for e in events if e.get("type") == "tool_call"]
+    errors = [e["error"] for e in events if e.get("type") == "tool_error"]
+    assert calls == ["bash"]
+    assert len(errors) == 1 and "protected path" in errors[0], errors
+    assert not [e for e in events if e.get("type") == "tool_result"]
