@@ -212,13 +212,14 @@ class MiniAgent:
             return ("tool_search", "")
         if lowered in {"pwd", "where am i"}:
             return ("bash", "pwd")
+        # 显式 `bash ` 前缀优先于关键词意图
+        if lowered.startswith("bash "):
+            return ("bash", text.strip()[5:].strip())
         if "list files" in lowered or lowered in {"ls", "dir"}:
             return ("bash", "ls -la")
         match = re.search(r"read\s+(.+)", text, re.IGNORECASE)
         if match:
             return ("read_file", match.group(1).strip())
-        if lowered.startswith("bash "):
-            return ("bash", text[5:].strip())
         return None
 
     def _summarize_result(self, content: str) -> str:
