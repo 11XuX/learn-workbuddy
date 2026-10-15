@@ -231,7 +231,11 @@ class ToolRegistry:
             )
         path = self.storage.tool_result_path(session, tool_call_id)
         path.write_text(content, encoding="utf-8")
-        preview = content[:6_000] + "\n\n...[externalized output]...\n\n" + content[-24_000:]
+        # 按 UTF-8 字节切片，与阈值判断同口径；ignore 丢弃被切断的半个码点
+        raw = content.encode("utf-8")
+        head = raw[:6_000].decode("utf-8", "ignore")
+        tail = raw[max(len(raw) - 24_000, 6_000):].decode("utf-8", "ignore")
+        preview = head + "\n\n...[externalized output]...\n\n" + tail
         pointer = f"\n\nFull output written to: {path}"
         return ToolResult(
             tool_call_id=tool_call_id,
