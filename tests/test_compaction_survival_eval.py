@@ -90,3 +90,34 @@ def test_threshold_overrides_do_not_leak_to_other_instances(cse):
             sys.modules["anthropic"] = saved
     assert plain.TOKEN_THRESHOLD == 80_000
     assert plain.MAX_TOOL_RESULT_TOKENS == 5_000
+
+
+# --- Verifier adversarial (card #40): the gate must also require the inline naive to lose both ---
+
+
+def _fake_row(fact: bool, pending: bool) -> dict:
+    return {
+        "applied_layers": sorted(LOSSY),
+        "tokens_before": 1000,
+        "tokens_after": 100,
+        "fact_in_prompt": fact,
+        "pending_in_prompt": pending,
+    }
+
+
+@pytest.mark.parametrize("fact,pending", [(True, False), (False, True), (True, True)])
+def test_gate_rejects_any_inline_survivor(cse, monkeypatch, tmp_path, fact, pending):
+    monkeypatch.setattr(cse, "run_inline_durable_then_compact", lambda _c: _fake_row(fact, pending))
+    report = cse.run_evaluation(tmp_path)
+    assert report["passed"] is False
+    assert report["cases"][0]["passed"] is False
+
+
+def test_cli_returns_1_and_writes_failed_report(cse, monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cse, "run_bypass", lambda _c: _fake_row(False, False))
+    monkeypatch.setattr(sys, "argv", [str(CODE), "--output-dir", str(tmp_path)])
+    assert cse.main() == 1
+    report = json.loads((tmp_path / cse.REPORT_NAME).read_text(encoding="utf-8"))
+    assert report["passed"] is False
+    assert report["cases"][0]["passed"] is False
+    assert "RESULT: FAILED" in capsys.readouterr().out
