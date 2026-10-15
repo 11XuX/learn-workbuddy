@@ -92,3 +92,19 @@ def test_fresh_instance_ignores_skills_appended_to_another_instance(sme):
     fresh = sme.load_skills_chapter()
     assert [s.title for s in fresh.skill_index] == ["git-commit", "code-review", "deploy-check"]
     assert _failed(sme.score_gold(fresh.match_skill)) == []
+
+
+@pytest.mark.parametrize(("naive", "case_id"), [
+    ("case_sensitive_matcher", "chapter_matches_gold"),
+    ("tokenized_matcher", "token_split_fix_breaks_cjk"),
+])
+def test_adversarial_gate_turns_red_when_naive_stops_failing(
+    sme, monkeypatch, tmp_path, naive, case_id
+):
+    # A gate must prove its naive matcher fails the named rows, not only that
+    # the chapter passes GOLD.
+    monkeypatch.setattr(sme, naive, lambda chapter: chapter.match_skill)
+    report = sme.run_evaluation(tmp_path)
+    status = {c["case_id"]: c["passed"] for c in report["cases"]}
+    assert status[case_id] is False and report["passed"] is False
+    assert all(ok for cid, ok in status.items() if cid != case_id)
