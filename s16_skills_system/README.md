@@ -610,6 +610,19 @@ WorkBuddy 的一个设计原则：**完成多步骤任务后，把流程沉淀�
 
 这是单进程、内存态的简化：进程退出后待审批项随之消失。真实 harness 会把待审批项持久化，并通过 UI 让用户确认。
 
+**试一下**：不需要 API key，运行本章 REPL 输入 `/skill-gate-demo`。它调用模型走的同一个 `create_skill()`（`TOOL_HANDLERS["SkillCreate"]`）：含 `curl` 的技能进入待审批，`match_skill` 触发不到；扮演用户执行 `approve` 后才命中。附带一行 P2 直接创建、一行 P0 连待审批都进不去。演示里的 approve 等价于用户在本地终端输入的命令，模型的工具 schema 仍然没有审批字段。整个演示只在内存里进行，结束后恢复技能索引和待审批队列，随后的 `skills` 看不到 `gate-demo-*`。
+
+```text
+技能 'gate-demo-fetch' 待用户审批: 需审批: 包含 'curl ' (网络请求)
+[pending] match_skill('拉取接口') -> None
+[user] approve gate-demo-fetch
+技能 'gate-demo-fetch' 已经用户批准并创建。
+[approved] match_skill('拉取接口') -> gate-demo-fetch
+技能 'gate-demo-notes' 已创建。
+拒绝创建技能 'gate-demo-wipe': 禁止安装: 包含危险模式 'rm -rf /' (递归删除根目录)
+[P0] gate-demo-wipe in pending_skills: False
+```
+
 ---
 
 ## 代码 walkthrough

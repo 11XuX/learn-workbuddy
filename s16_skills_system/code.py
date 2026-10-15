@@ -83,7 +83,7 @@ load_dotenv(override=True)
 if os.getenv("ANTHROPIC_BASE_URL"): os.environ.pop("ANTHROPIC_AUTH_TOKEN", None)
 
 WORKDIR = Path.cwd()
-client = Anthropic(base_url=os.getenv("ANTHROPIC_BASE_URL"))
+client: Anthropic | None = None  # created on first model call; offline paths need no key
 MODEL = os.environ.get("MODEL_ID")
 if not MODEL:
     raise SystemExit(
@@ -847,8 +847,17 @@ def invalid_tool_args(name, tool_input):
     return (unknown or missing) and f"Error: invalid arguments for {name}: unknown={unknown} missing={missing}"
 
 
+def runtime_client() -> Anthropic:
+    """Create the online client lazily so offline commands work without a key."""
+    global client
+    if client is None:
+        client = Anthropic(base_url=os.getenv("ANTHROPIC_BASE_URL"))
+    return client
+
+
 def agent_loop(messages: list):
     """Agent loop with skill auto-matching and on-demand loading."""
+    client = runtime_client()
     while True:
         # Rebuild system prompt (may include newly loaded skills)
         system = build_system_prompt()
@@ -889,6 +898,42 @@ def agent_loop(messages: list):
         messages.append({"role": "user", "content": results})
 
 
+def run_skill_gate_demo() -> list[str]:
+    """Offline walkthrough of the SkillCreate write gate; restores all state.
+
+    Uses the same create_skill() the model reaches via TOOL_HANDLERS. The
+    approve step stands in for the user's terminal command. Memory only.
+    """
+    saved_index = list(skill_index)
+    saved_loaded = [s.loaded for s in saved_index]
+    saved_loaded_skills = list(loaded_skills)
+    saved_pending = dict(pending_skills)
+    saved_seed = dict(SEED_SKILLS)
+    create = TOOL_HANDLERS["SkillCreate"]
+    try:
+        lines = [create(title="gate-demo-fetch", summary="拉取接口数据",
+                        read_when=["拉取接口"], content="curl https://api.example.com")]
+        lines.append(f"[pending] match_skill('拉取接口') -> {match_skill('拉取接口')}")
+        lines.append("[user] approve gate-demo-fetch")
+        lines.append(approve_skill("gate-demo-fetch"))
+        lines.append(f"[approved] match_skill('拉取接口') -> {match_skill('拉取接口')}")
+        lines.append(create(title="gate-demo-notes", summary="查看仓库状态",
+                            read_when=["仓库状态"], content="git status"))
+        lines.append(create(title="gate-demo-wipe", summary="清空磁盘",
+                            read_when=["清空磁盘"], content="rm -rf /"))
+        lines.append(f"[P0] gate-demo-wipe in pending_skills: {'gate-demo-wipe' in pending_skills}")
+        return lines
+    finally:
+        skill_index[:] = saved_index
+        for skill, loaded in zip(saved_index, saved_loaded):
+            skill.loaded = loaded
+        loaded_skills[:] = saved_loaded_skills
+        pending_skills.clear()
+        pending_skills.update(saved_pending)
+        SEED_SKILLS.clear()
+        SEED_SKILLS.update(saved_seed)
+
+
 # ======================================================================
 # Main
 # ======================================================================
@@ -912,6 +957,7 @@ if __name__ == "__main__":
     print(f"\033[90m  audit   — 安全审计演示\033[0m")
     print(f"\033[90m  approve X / reject X — 批准或拒绝待审批技能 X\033[0m")
     print(f"\033[90m  stats   — 查看统计\033[0m")
+    print(f"\033[90m  /skill-gate-demo — 离线演示写入闸 (P1 待审批 → 批准后可触发)\033[0m")
     print(f"\033[90m试试说 \"帮我提交代码\" — 会自动匹配 git-commit 技能\033[0m\n")
 
     history = []
@@ -951,6 +997,11 @@ if __name__ == "__main__":
                 content="# Test Skill\n\n这是一个测试技能。"
             )
             print(f"\033[32m{result}\033[0m")
+            continue
+
+        if cmd == "/skill-gate-demo":
+            for line in run_skill_gate_demo():
+                print(line)
             continue
 
         if cmd.startswith(("approve ", "reject ")):
