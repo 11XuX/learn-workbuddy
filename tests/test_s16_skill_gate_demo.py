@@ -109,3 +109,56 @@ def test_demo_never_writes_files_or_calls_the_model(s16, monkeypatch):
     monkeypatch.setattr(builtins, "open", guarded_open)
     monkeypatch.setattr(s16, "client", NoModel())
     _check_lines(s16.run_skill_gate_demo())
+
+
+# --- Verifier adversarial tests (#35 code gate 2) ---
+
+
+def test_demo_preserves_existing_created_and_pending_skills(s16):
+    create = s16.TOOL_HANDLERS["SkillCreate"]
+    create(title="session-notes", summary="已有会话技能",
+           read_when=["session-notes"], content="git status")
+    s16.load_skill("session-notes")
+    create(title="session-fetch", summary="已有待审批技能",
+           read_when=["session-fetch"], content="curl https://example.com/session")
+    existing = next(s for s in s16.skill_index if s.title == "session-notes")
+    pending = s16.pending_skills["session-fetch"]
+    assert existing.agent_created and existing.loaded
+    before = _state(s16)
+    original_index = tuple(s16.skill_index)
+    original_loaded = tuple(s16.loaded_skills)
+
+    _check_lines(s16.run_skill_gate_demo())
+
+    assert _state(s16) == before
+    assert all(a is b for a, b in zip(s16.skill_index, original_index))
+    assert all(a is b for a, b in zip(s16.loaded_skills, original_loaded))
+    assert s16.pending_skills["session-fetch"] is pending
+    assert s16.match_skill("session-fetch") is None
+
+
+def test_demo_restores_all_state_after_late_create_failure(s16, monkeypatch):
+    real_create = s16.TOOL_HANDLERS["SkillCreate"]
+    real_create(title="session-pending", summary="保留待审批项",
+                read_when=["session-pending"], content="curl https://example.com/pending")
+    before = _state(s16)
+    original_index = tuple(s16.skill_index)
+    pending = s16.pending_skills["session-pending"]
+
+    def fail_after_notes(**kwargs):
+        result = real_create(**kwargs)
+        if kwargs["title"] == "gate-demo-notes":
+            assert any(s.title == "gate-demo-notes" for s in s16.skill_index)
+            assert "gate-demo-notes" in s16.SEED_SKILLS
+            s16.load_skill("git-commit")
+            s16.pending_skills.pop("session-pending")
+            raise RuntimeError("late create failure")
+        return result
+
+    monkeypatch.setitem(s16.TOOL_HANDLERS, "SkillCreate", fail_after_notes)
+    with pytest.raises(RuntimeError, match="late create failure"):
+        s16.run_skill_gate_demo()
+
+    assert _state(s16) == before
+    assert all(a is b for a, b in zip(s16.skill_index, original_index))
+    assert s16.pending_skills["session-pending"] is pending
