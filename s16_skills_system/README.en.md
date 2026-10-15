@@ -313,6 +313,12 @@ def audit_skill(skill_path: Path) -> tuple[str, str]:
     return ("P2", "Safe: no dangerous patterns")
 ```
 
+**Try it**: no API key needed. Run the chapter REPL and type `/skill-gate-demo`. It calls the same `create_skill()` the model reaches through `TOOL_HANDLERS["SkillCreate"]`: a skill containing `curl` goes to pending approval and `match_skill` cannot trigger it; only after the demo plays the user's `approve` command does it match. One extra line each shows P2 created directly and P0 rejected without entering the pending queue. The demo's approve stands for the command a user types in the local terminal; the model's tool schema still has no approval field. Everything stays in memory and the skill index and pending queue are restored afterwards, so a following `skills` shows no `gate-demo-*`. A sample run is in the Chinese README (the demo prints Chinese status lines).
+
+```bash
+MODEL_ID=offline python3 s16_skills_system/code.py   # then type: /skill-gate-demo
+```
+
 ## The Tool Schema Token Problem
 
 ### Two-Step Loading
