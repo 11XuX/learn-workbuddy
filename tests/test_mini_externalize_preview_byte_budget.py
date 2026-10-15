@@ -43,3 +43,71 @@ def test_cjk_read_preview_is_smaller_than_full_output(tmp_path: Path) -> None:
     assert repeated <= chars, f"preview holds {repeated} of {chars} chars"
     # ... and must be smaller than the output it stands in for.
     assert preview_bytes < 60_000, f"preview {preview_bytes} B >= full 60000 B"
+
+
+def test_read_preview_ignores_partial_utf8_at_both_boundaries(
+    tmp_path: Path,
+) -> None:
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    text = "a" * 5999 + "汉" * 18000 + "z"
+    assert len(text.encode("utf-8")) == 60000
+    (workdir / "boundary.md").write_text(text, encoding="utf-8")
+
+    config = HarnessConfig(root_dir=tmp_path / "home")
+    storage = Storage(config)
+    agent = MiniAgent(storage, ToolRegistry(config, storage), EventBus())
+    session = storage.create_session(str(workdir), "utf8-boundary")
+
+    result = agent.prompt(session, "read boundary.md")["toolResults"][0]
+
+    assert result["externalized_path"] is not None
+    path = Path(result["externalized_path"])
+    assert path.read_text(encoding="utf-8") == text
+    pointer = f"\n\nFull output written to: {path}"
+    assert result["content"].endswith(pointer)
+    preview = result["content"][:-len(pointer)]
+    head, tail = preview.split("\n\n...[externalized output]...\n\n")
+
+    assert "\ufffd" not in preview
+    assert len(head.encode("utf-8")) <= 6000
+    assert len(tail.encode("utf-8")) <= 24000
+    assert head == "a" * 5999
+    assert tail == "汉" * 7999 + "z"
+    assert head.count("汉") + tail.count("汉") <= text.count("汉")
+
+
+def test_public_read_preview_tail_starts_after_head_budget(
+    tmp_path: Path,
+) -> None:
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    text = "a" * 5999 + "汉" * 4000 + "z"
+    assert len(text.encode("utf-8")) == 18000
+    (workdir / "short.md").write_text(text, encoding="utf-8")
+
+    config = HarnessConfig(
+        root_dir=tmp_path / "home",
+        tool_result_threshold=10 * 1024,
+    )
+    storage = Storage(config)
+    tools = ToolRegistry(config, storage)
+    session = storage.create_session(str(workdir), "tail-floor")
+
+    result = tools.run("read_file", "short.md", session)
+
+    assert result.externalized_path is not None
+    path = Path(result.externalized_path)
+    assert path.read_text(encoding="utf-8") == text
+    pointer = f"\n\nFull output written to: {path}"
+    assert result.content.endswith(pointer)
+    preview = result.content[:-len(pointer)]
+    head, tail = preview.split("\n\n...[externalized output]...\n\n")
+
+    assert "\ufffd" not in preview
+    assert len(head.encode("utf-8")) <= 6000
+    assert len(tail.encode("utf-8")) <= 24000
+    assert head == "a" * 5999
+    assert tail == "汉" * 3999 + "z"
+    assert head.count("a") + tail.count("a") == text.count("a")
+    assert head.count("汉") + tail.count("汉") <= text.count("汉")
