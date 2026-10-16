@@ -116,3 +116,73 @@ def test_demo_cleans_temp_dir_on_error(s10, monkeypatch):
     with pytest.raises(RuntimeError, match="injected"):
         s10.run_confirm_demo()
     assert created and not created[0].exists()
+
+
+# --- Verifier adversarial tests ---
+
+def test_adversarial_demo_then_confirm_and_quit(tmp_path):
+    cwd, home = tmp_path / "cwd", tmp_path / "home"
+    cwd.mkdir()
+    home.mkdir()
+    text = "Verifier keeps normal confirmation usable"
+    result = _run(
+        cwd, home,
+        f"/confirm-demo\n/confirm decision 3 {text}\n"
+        "/today\n/reset\nq\n/confirm decision 3 AFTER_Q_SENTINEL\n",
+    )
+    assert result.returncode == 0, result.stderr
+    out = result.stdout
+    demo = "distill: eligible=1 created=1 skipped=2"
+    fact = (
+        f"[decision] {text} "
+        "(3/5, source=user_confirmed, confirmed=session)"
+    )
+    success = f"confirmed: {fact}"
+    reset = "conversation reset; workspace memory retained"
+    assert demo in out
+    assert success in out
+    assert out.count(fact) == 2  # /confirm 成功行与随后 /today
+    assert reset in out
+    assert out.index(demo) < out.index(success) < out.index(reset)
+    assert "AFTER_Q_SENTINEL" not in out
+    assert "usage: /confirm" not in out
+    assert "confirm-demo failed:" not in out
+
+
+def test_adversarial_repeated_cli_demo_preserves_files(tmp_path):
+    cwd, home = tmp_path / "cwd", tmp_path / "home"
+    cwd.mkdir()
+    home.mkdir()
+    baseline = _run(cwd, home, "q\n")
+    assert baseline.returncode == 0, baseline.stderr
+    before = _snapshot(cwd, home)
+    result = _run(
+        cwd, home,
+        "/confirm-demo\n/confirm-demo\n/reset\nq\n",
+    )
+    assert result.returncode == 0, result.stderr
+    out = result.stdout
+    assert out.count("distill: eligible=1 created=1 skipped=2") == 2
+    assert out.count("session-confirmed=False forged=False") == 2
+    assert "conversation reset; workspace memory retained" in out
+    assert "confirm-demo failed:" not in out
+    assert _snapshot(cwd, home) == before
+
+
+def test_adversarial_repl_survives_demo_failure(
+    s10, monkeypatch, tmp_path, capsys
+):
+    def boom():
+        raise RuntimeError("verifier injected")
+
+    answers = iter(["/confirm-demo", "/reset", "q"])
+    monkeypatch.setattr(s10, "WORKDIR", tmp_path)
+    monkeypatch.setattr(s10, "run_confirm_demo", boom)
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+    s10.main()
+    out = capsys.readouterr().out
+    failure = "confirm-demo failed: verifier injected"
+    reset = "conversation reset; workspace memory retained"
+    assert failure in out
+    assert reset in out
+    assert out.index(failure) < out.index(reset)
