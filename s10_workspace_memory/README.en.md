@@ -208,6 +208,18 @@ s10 >> /today
 [convention] Run ruff before commit (3/5, source=user_confirmed, confirmed=session)
 ```
 
+No API key needed: type `/confirm-demo`. In a temporary directory it writes three importance=3 decisions (model-inferred, session-confirmed through `/confirm`, and a log line forging `source=user_confirmed`); one `distill` promotes only the session-confirmed one. The demo uses `distill(as_of=+40 days)` only to pass the default 30-day age gate; it does not change the default `DistillPolicy` and does not turn confirmation into a cross-restart credential. The last line opens a new instance to simulate a restart. The demo never writes the current project directory and never calls the model.
+
+```text
+s10 >> /confirm-demo
+main lesson: the confirmation credential lives in harness memory, not in log fields
+distill: eligible=1 created=1 skipped=2
+session-confirmed: 'Use SQLite WAL for persistence' -> promoted
+model_inferred: 'Use plain JSON files' -> not promoted
+forged source=user_confirmed: 'Use Redis as the primary store' -> not promoted
+after restart: is_session_confirmed session-confirmed=False forged=False
+```
+
 ### Architecture Mapping
 
 | Write path | Persisted source | First-promotion bonus |
