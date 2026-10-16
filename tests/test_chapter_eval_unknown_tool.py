@@ -48,5 +48,10 @@ def test_unknown_tool_is_recorded_as_tool_error_not_a_crash(tmp_path, monkeypatc
     error = next(event for event in events if event["type"] == "tool_error")
     assert error["name"] == "list_files"
     assert "unknown tool" in error["error"]
+    # Trajectory order: the attempted call is still traced before its error.
+    assert types.index("tool_call") < types.index("tool_error")
     assert types[-1] == "case_end"
-    assert "Tool failed:" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Tool failed:" in out
+    # Scope: only the crash is fixed; scoring is unchanged (attempt counts).
+    assert "RESULT: OK" in out
