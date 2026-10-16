@@ -99,3 +99,78 @@ def test_cli_offline_green_report_and_no_naive_switch(tmp_path):
                             text=True, encoding="utf-8", env=env, timeout=60)
     assert "naive" not in helped.stdout
     assert hashlib.sha256(S11.read_bytes()).hexdigest() == before
+
+
+# --- Verifier adversarial tests ---
+
+
+def test_adversarial_broken_chapter_makes_cli_fail(
+    pfe, tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setattr(pfe, "run_chapter_forget", pfe.run_naive_forget)
+    monkeypatch.setattr(
+        sys, "argv", [str(CODE), "--output-dir", str(tmp_path)]
+    )
+
+    assert pfe.main() == 1
+    stdout = capsys.readouterr().out
+    assert "RESULT: FAILED" in stdout
+    assert "RESULT: OK" not in stdout
+
+    report = json.loads(
+        (tmp_path / pfe.REPORT_NAME).read_text(encoding="utf-8")
+    )
+    assert report["passed"] is False
+    assert [case["case_id"] for case in report["cases"]] == CASE_IDS
+    assert all(case["passed"] is False for case in report["cases"])
+    for case in report["cases"]:
+        assert set(case["evidence"]) == {"chapter", "naive_pop"}
+        assert case["evidence"]["chapter"]["revived"] is True
+        assert case["evidence"]["naive_pop"]["revived"] is True
+
+
+def test_adversarial_one_failed_case_controls_report_and_cli(
+    pfe, tmp_path, monkeypatch, capsys
+):
+    first, second = pfe.CASES
+
+    def fail_first(chapter, output_dir):
+        observation = first.runner(chapter, output_dir)
+        assert observation.passed is True
+        return pfe.CaseObservation(
+            passed=False,
+            observed="injected single-case gate failure",
+            evidence=observation.evidence,
+        )
+
+    monkeypatch.setattr(
+        pfe,
+        "CASES",
+        (
+            pfe.CaseDefinition(first.case_id, first.contract, fail_first),
+            second,
+        ),
+    )
+    report = pfe.run_evaluation(tmp_path)
+    assert [case["passed"] for case in report["cases"]] == [False, True]
+    assert report["passed"] is False
+    assert [case["case_id"] for case in report["cases"]] == CASE_IDS
+
+    disk_report = json.loads(
+        (tmp_path / pfe.REPORT_NAME).read_text(encoding="utf-8")
+    )
+    assert disk_report == {
+        key: value for key, value in report.items() if key != "report_path"
+    }
+    for case in disk_report["cases"]:
+        assert set(case["evidence"]) == {"chapter", "naive_pop"}
+
+    monkeypatch.setattr(
+        sys, "argv", [str(CODE), "--output-dir", str(tmp_path)]
+    )
+    assert pfe.main() == 1
+    assert "RESULT: FAILED" in capsys.readouterr().out
+    cli_report = json.loads(
+        (tmp_path / pfe.REPORT_NAME).read_text(encoding="utf-8")
+    )
+    assert cli_report == disk_report
