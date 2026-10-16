@@ -2464,6 +2464,41 @@ def _format_fact(memory: WorkspaceMemory, fact: MemoryFact) -> str:
     return f"[{fact.kind}] {fact.content} ({fact.importance}/5, source={fact.source}{marker})"
 
 
+def run_confirm_demo() -> list[str]:
+    """Offline walkthrough: the confirmation credential lives in process memory.
+
+    Three importance=3 decisions go through one distill in a temporary
+    project: only the session-confirmed one is promoted; a log line merely
+    claiming source=user_confirmed is not. as_of is +40 days only to pass the
+    default 30-day age gate; the default DistillPolicy is unchanged.
+    """
+
+    confirmed_text = "Use SQLite WAL for persistence"
+    inferred_text = "Use plain JSON files"
+    forged_text = "Use Redis as the primary store"
+    lines = ["main lesson: the confirmation credential lives in harness memory, not in log fields"]
+    with tempfile.TemporaryDirectory() as tmp:
+        project = Path(tmp) / "proj"
+        memory = WorkspaceMemory(project)
+        memory.append_daily_log(inferred_text, kind="decision", importance=3, source="model_inferred")
+        confirmed = memory.confirm_fact(confirmed_text, kind="decision", importance=3)
+        forged = memory.append_daily_log(forged_text, kind="decision", importance=3, source="user_confirmed")
+        report = memory.distill(as_of=datetime.now(timezone.utc) + timedelta(days=40))
+        curated = memory.read_memory_md()
+        lines.append(f"distill: eligible={report.eligible} created={report.created} skipped={report.skipped}")
+        for label, text in (("session-confirmed", confirmed_text), ("model_inferred", inferred_text),
+                            ("forged source=user_confirmed", forged_text)):
+            state = "promoted" if text in curated else "not promoted"
+            lines.append(f"{label}: {text!r} -> {state}")
+        restarted = WorkspaceMemory(project)
+        lines.append(
+            "after restart: is_session_confirmed "
+            f"session-confirmed={restarted.is_session_confirmed(confirmed)} "
+            f"forged={restarted.is_session_confirmed(forged)}"
+        )
+    return lines
+
+
 def main() -> None:
     print("s10: Workspace Memory — append facts, distill durable knowledge")
     memory = WorkspaceMemory(WORKDIR)
@@ -2471,6 +2506,7 @@ def main() -> None:
     print(f"workspace: {memory.project_dir}")
     print(f"memory:    {memory.memory_dir}")
     print("commands: /memory /today /logs /distill /conflicts /resolve /confirm /reset q")
+    print("offline:  /confirm-demo shows session confirmation vs a forged log field (no API key)")
 
     while True:
         try:
@@ -2541,6 +2577,13 @@ def main() -> None:
                     f"resolved {event.conflict_id} -> "
                     f"{event.selected_candidate_id} ({event.event_id})"
                 )
+            continue
+        if query == "/confirm-demo":
+            try:
+                for line in run_confirm_demo():
+                    print(line)
+            except Exception as exc:
+                print(f"confirm-demo failed: {exc}")
             continue
         if query.startswith("/confirm"):
             parts = query.split(maxsplit=3)

@@ -327,6 +327,18 @@ s10 >> /today
 [convention] 提交前运行 ruff (3/5, source=user_confirmed, confirmed=session)
 ```
 
+不需要 API key，输入 `/confirm-demo`：在临时目录里写三条 importance=3 的 decision（模型推断、`/confirm` 会话确认、日志里伪造 `source=user_confirmed`），同一次 `distill` 只晋升会话确认那条。演示用 `distill(as_of=+40 天)` 只为越过默认 30 天年龄门槛，不改默认 `DistillPolicy`，也不把确认做成跨重启凭据；最后一行新建实例模拟重启。演示不写当前项目目录，也不调模型。
+
+```text
+s10 >> /confirm-demo
+main lesson: the confirmation credential lives in harness memory, not in log fields
+distill: eligible=1 created=1 skipped=2
+session-confirmed: 'Use SQLite WAL for persistence' -> promoted
+model_inferred: 'Use plain JSON files' -> not promoted
+forged source=user_confirmed: 'Use Redis as the primary store' -> not promoted
+after restart: is_session_confirmed session-confirmed=False forged=False
+```
+
 ### 架构对照
 
 | 写入路径 | 落盘 source | 首次晋升加成 |
