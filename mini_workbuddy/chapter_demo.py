@@ -151,7 +151,7 @@ def _tool_argument(tool_name: str, tool_input: dict[str, Any]) -> str:
         return str(tool_input.get("path", ""))
     if tool_name == "tool_search":
         return str(tool_input.get("query", ""))
-    raise KeyError(f"unknown tool: {tool_name}")
+    return json.dumps(tool_input, ensure_ascii=False)
 
 
 def _append_trace(path: Path, event: dict[str, Any]) -> None:
