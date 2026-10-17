@@ -1,15 +1,17 @@
 """s23: /verify must report a broken chain, not crash, on an unparsable line.
 
-README s23 step 5 tells the reader to hand-edit today's audit JSONL and run
-/verify to "观察链断裂"; README also says the log must stay trustworthy when
-someone "（或 agent 自己）" edits it.  verify_chain() returns (ok, index) and
-already maps a corrupt head anchor to (False, 0) on the empty-log path, so a
-corrupt line or a torn final write must be (False, i), not JSONDecodeError.
+tests/test_chapter_security_parity.py keeps chapter audit code at parity with
+mini_workbuddy, whose verify() returns False on a corrupt line (see
+docs/code-quality-review.md); README s23 says someone "（或 agent 自己）" may
+edit the log.  verify_chain() returns (ok, i): i is the first entry that is not
+trusted (= entries verified before it; len(entries) for a bad head anchor).
+So a bad line or anchor must give (False, i), not JSONDecodeError.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -43,7 +45,7 @@ def _three_entries(s23) -> list[str]:
 
 def test_hand_edited_middle_line_reports_break(s23) -> None:
     lines = _three_entries(s23)
-    lines[1] = lines[1][:-1]  # README step 5: edit a record, drop the closing brace
+    lines[1] = lines[1][:-1]  # hand edit slips: drop the closing brace
     s23.audit_log_path().write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     assert s23.verify_chain() == (False, 1)
@@ -53,6 +55,8 @@ def test_torn_final_write_reports_break(s23) -> None:
     lines = _three_entries(s23)
     torn = lines[2][: len(lines[2]) // 2]  # process died halfway through f.write
     s23.audit_log_path().write_text("\n".join(lines[:2] + [torn]), encoding="utf-8")
+    head = {"count": 2, "head": json.loads(lines[1])["hash"]}  # head not rewritten yet
+    s23.audit_head_path().write_text(json.dumps(head, sort_keys=True), encoding="utf-8")
 
     assert s23.verify_chain() == (False, 2)
 
@@ -62,3 +66,12 @@ def test_corrupt_head_anchor_reports_break(s23) -> None:
     s23.audit_head_path().write_text('{"count": 3, "head": "', encoding="utf-8")
 
     assert s23.verify_chain() == (False, 3)
+
+
+def test_tampered_entry_before_torn_tail_reports_first_break(s23) -> None:
+    lines = _three_entries(s23)
+    lines[0] = lines[0].replace('"ok"', '"OK"')  # README step 5: change a value
+    torn = lines[2][: len(lines[2]) // 2]
+    s23.audit_log_path().write_text("\n".join(lines[:2] + [torn]), encoding="utf-8")
+
+    assert s23.verify_chain() == (False, 0)  # entry 0 is the first untrusted one
