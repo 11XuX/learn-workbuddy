@@ -78,3 +78,59 @@ def test_command_output_that_starts_with_error_is_still_success(monkeypatch, tmp
     result = dispatch(s02, "bash", {"command": "echo 'Error: just text'"})
     assert result.ok and result.content == "Error: just text"
     assert "is_error" not in result.to_protocol_block()
+
+
+def test_blocked_bash_never_executes_command(monkeypatch, tmp_path: Path) -> None:
+    s02 = load_s02(monkeypatch, tmp_path)
+    marker = tmp_path / "executed.txt"
+    result = dispatch(
+        s02, "bash",
+        {"command": "printf executed > executed.txt # sudo"},
+    )
+    assert not marker.exists()
+    assert_execution_error(s02, result, "blocked")
+
+
+def test_bash_exit_status_preserves_output_contract(monkeypatch, tmp_path: Path) -> None:
+    s02 = load_s02(monkeypatch, tmp_path)
+    cases = [
+        ("printf ' out '; printf ' err ' >&2; exit 7", "out  err"),
+        ("exit 7", "(no output)"),
+        ("true", "(no output)"),
+    ]
+    for command, expected in cases:
+        result = dispatch(s02, "bash", {"command": command})
+        assert result.ok, result.content
+        assert result.content == expected
+        assert "is_error" not in result.to_protocol_block()
+
+
+def test_missing_edit_never_writes_and_success_edits_once(monkeypatch, tmp_path: Path) -> None:
+    s02 = load_s02(monkeypatch, tmp_path)
+    target = tmp_path / "notes.txt"
+    original = b"hello\nhello\n"
+    target.write_bytes(original)
+    writes = []
+    real_write_text = Path.write_text
+
+    def track_write(path, *args, **kwargs):
+        if path == target:
+            writes.append(path)
+        return real_write_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", track_write)
+    result = dispatch(
+        s02, "edit_file",
+        {"path": "notes.txt", "old_text": "absent", "new_text": "x"},
+    )
+    assert writes == []
+    assert target.read_bytes() == original
+    assert_execution_error(s02, result, "not found")
+
+    result = dispatch(
+        s02, "edit_file",
+        {"path": "notes.txt", "old_text": "hello", "new_text": "changed"},
+    )
+    assert result.ok, result.content
+    assert "is_error" not in result.to_protocol_block()
+    assert target.read_bytes() == b"changed\nhello\n"
