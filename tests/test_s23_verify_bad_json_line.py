@@ -75,3 +75,16 @@ def test_tampered_entry_before_torn_tail_reports_first_break(s23) -> None:
     s23.audit_log_path().write_text("\n".join(lines[:2] + [torn]), encoding="utf-8")
 
     assert s23.verify_chain() == (False, 0)  # entry 0 is the first untrusted one
+
+
+def test_torn_write_inside_multibyte_char_reports_break(s23) -> None:
+    for _ in range(3):
+        s23.append_audit_entry("bash", {"command": "echo 你好世界"}, "完成")
+    assert s23.verify_chain() == (True, 3)
+    raw = s23.audit_log_path().read_bytes().split(b"\n")[:3]
+    cut = raw[2].index("你".encode("utf-8")) + 1  # died after the first byte of 你
+    s23.audit_log_path().write_bytes(b"\n".join(raw[:2] + [raw[2][:cut]]))
+    head = {"count": 2, "head": json.loads(raw[1].decode("utf-8"))["hash"]}
+    s23.audit_head_path().write_text(json.dumps(head, sort_keys=True), encoding="utf-8")
+
+    assert s23.verify_chain() == (False, 2)
