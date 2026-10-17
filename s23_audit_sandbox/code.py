@@ -145,10 +145,7 @@ def verify_chain() -> tuple[bool, int]:
     if not path.exists():
         return True, 0
 
-    entries = []
-    for line in path.read_text().strip().split("\n"):
-        if line.strip():
-            entries.append(json.loads(line))
+    entries = [line for line in path.read_bytes().strip().split(b"\n") if line.strip()]
 
     if not entries:
         head = audit_head_path()
@@ -161,7 +158,11 @@ def verify_chain() -> tuple[bool, int]:
         return True, 0
 
     prev_hash = GENESIS_HASH
-    for i, entry in enumerate(entries):
+    for i, line in enumerate(entries):
+        try:
+            entry = json.loads(line.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return False, i  # An unreadable line is itself evidence of tampering
         expected = compute_hash(entry, prev_hash)
         if entry.get("hash") != expected:
             return False, i  # Chain broken at entry i
@@ -169,7 +170,10 @@ def verify_chain() -> tuple[bool, int]:
 
     head = audit_head_path()
     if head.exists():
-        anchor = json.loads(head.read_text(encoding="utf-8"))
+        try:
+            anchor = json.loads(head.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return False, len(entries)
         if anchor.get("count") != len(entries) or anchor.get("head") != prev_hash:
             return False, len(entries)
 
