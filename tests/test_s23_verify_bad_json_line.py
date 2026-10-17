@@ -88,3 +88,47 @@ def test_torn_write_inside_multibyte_char_reports_break(s23) -> None:
     s23.audit_head_path().write_text(json.dumps(head, sort_keys=True), encoding="utf-8")
 
     assert s23.verify_chain() == (False, 2)
+
+
+def test_first_hash_break_precedes_invalid_utf8_tail(s23) -> None:
+    lines = _three_entries(s23)
+    lines[0] = lines[0].replace('"ok"', '"OK"')
+    raw = b"\n".join(line.encode("utf-8") for line in lines[:2])
+    s23.audit_log_path().write_bytes(raw + b'\n{"result":"\xe4')
+
+    assert s23.verify_chain() == (False, 0)
+
+
+def test_valid_chain_with_crlf_then_bad_anchor(s23) -> None:
+    lines = _three_entries(s23)
+    path = s23.audit_log_path()
+    path.write_bytes(("\r\n".join(lines) + "\r\n").encode("utf-8"))
+    assert s23.verify_chain() == (True, 3)
+
+    head = s23.audit_head_path()
+    head.write_text('{"count": 3, "head": "', encoding="utf-8")
+    before = (path.read_bytes(), head.read_bytes())
+
+    assert s23.verify_chain() == (False, 3)
+    assert (path.read_bytes(), head.read_bytes()) == before
+
+
+def test_empty_log_preserves_anchor_rules(s23) -> None:
+    _three_entries(s23)
+    path = s23.audit_log_path()
+    head = s23.audit_head_path()
+    path.write_bytes(b"")
+
+    assert s23.verify_chain() == (False, 0)
+
+    head.write_text('{"count":', encoding="utf-8")
+    assert s23.verify_chain() == (False, 0)
+
+    head.write_text(
+        json.dumps({"count": 0, "head": s23.GENESIS_HASH}),
+        encoding="utf-8",
+    )
+    assert s23.verify_chain() == (True, 0)
+
+    head.unlink()
+    assert s23.verify_chain() == (True, 0)
