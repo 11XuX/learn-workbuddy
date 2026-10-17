@@ -83,3 +83,130 @@ def test_cli_green_report_and_example_untouched(tmp_path):
     assert all(case["passed"] for case in report["cases"])
     assert sorted(path.name for path in tmp_path.iterdir()) == ["out"]
     assert hashlib.sha256(EVOLVING.read_bytes()).hexdigest() == before
+
+
+# Verifier adversarial tests (card #49, code gate 2).
+
+@pytest.mark.parametrize("failed_index", [0, 1])
+def test_main_exits_nonzero_when_either_gate_fails(
+    spe, tmp_path, monkeypatch, failed_index
+):
+    from dataclasses import replace
+
+    def passing_runner(evolving, output):
+        return spe.CaseObservation(True, "controlled pass", {})
+
+    def failing_runner(evolving, output):
+        return spe.CaseObservation(False, "controlled failure", {})
+
+    cases = tuple(
+        replace(
+            case,
+            runner=failing_runner if index == failed_index else passing_runner,
+        )
+        for index, case in enumerate(spe.CASES)
+    )
+    monkeypatch.setattr(sys, "dont_write_bytecode", True)
+    monkeypatch.setattr(spe, "CASES", cases)
+    out_dir = tmp_path / "out"
+    monkeypatch.setattr(
+        sys, "argv", [str(CODE), "--output-dir", str(out_dir)]
+    )
+
+    assert spe.main() != 0
+
+    report = json.loads(
+        (out_dir / spe.REPORT_NAME).read_text(encoding="utf-8")
+    )
+    assert report["passed"] is False
+    assert [case["case_id"] for case in report["cases"]] == CASE_IDS
+    assert [case["passed"] for case in report["cases"]] == [
+        index != failed_index for index in range(len(CASE_IDS))
+    ]
+
+
+@pytest.mark.parametrize("missing_check", ["held_out_trace", "held_out_digest"])
+def test_chapter_gate_requires_both_held_out_failures(
+    spe, tmp_path, monkeypatch, missing_check
+):
+    from dataclasses import replace
+
+    monkeypatch.setattr(sys, "dont_write_bytecode", True)
+    monkeypatch.setattr(spe.tempfile, "tempdir", str(tmp_path))
+    evolving = spe.load_evolving_skills()
+    original_evaluate = evolving.SkillEvolutionPipeline.evaluate
+
+    def evaluate_without_one_check(pipeline, candidate, *, validation):
+        report = original_evaluate(
+            pipeline, candidate, validation=validation
+        )
+        assert report.passed is False
+        assert report.checks[missing_check] is False
+        checks = dict(report.checks)
+        del checks[missing_check]
+        return replace(report, checks=checks)
+
+    monkeypatch.setattr(
+        evolving.SkillEvolutionPipeline,
+        "evaluate",
+        evaluate_without_one_check,
+    )
+
+    observation = spe._chapter_rejects_leak(evolving, tmp_path / "out")
+
+    assert observation.passed is False
+
+
+def test_both_cases_actually_evaluate_the_leaked_training_trace(
+    spe, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(sys, "dont_write_bytecode", True)
+    monkeypatch.setattr(spe.tempfile, "tempdir", str(tmp_path))
+    evolving = spe.load_evolving_skills()
+    original_evaluate = evolving.SkillEvolutionPipeline.evaluate
+    original_naive = spe.naive_evaluate
+    original_distill = spe.distill_with_leak
+    calls = []
+    store_roots = []
+
+    def check_leak(candidate, validation):
+        assert validation.trace_id == "train-run-1"
+        assert validation.split == "train"
+        assert validation.trace_id in candidate.source_trace_ids
+        assert validation.source_digest in candidate.source_digests
+
+    def chapter_spy(pipeline, candidate, *, validation):
+        check_leak(candidate, validation)
+        calls.append(("chapter", validation.trace_id))
+        return original_evaluate(
+            pipeline, candidate, validation=validation
+        )
+
+    def naive_spy(module, candidate, *, validation):
+        check_leak(candidate, validation)
+        calls.append(("naive", validation.trace_id))
+        return original_naive(module, candidate, validation=validation)
+
+    def distill_spy(module, store_root):
+        result = original_distill(module, store_root)
+        root = result[0].store.root
+        assert tmp_path.resolve() in root.parents
+        store_roots.append(root)
+        return result
+
+    monkeypatch.setattr(spe, "load_evolving_skills", lambda: evolving)
+    monkeypatch.setattr(
+        evolving.SkillEvolutionPipeline, "evaluate", chapter_spy
+    )
+    monkeypatch.setattr(spe, "naive_evaluate", naive_spy)
+    monkeypatch.setattr(spe, "distill_with_leak", distill_spy)
+
+    report = spe.run_evaluation(tmp_path / "out")
+
+    assert report["passed"] is True
+    assert calls == [
+        ("chapter", "train-run-1"),
+        ("naive", "train-run-1"),
+    ]
+    assert len(store_roots) == 2
+    assert store_roots[0] != store_roots[1]
