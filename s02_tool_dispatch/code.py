@@ -362,7 +362,7 @@ def build_subprocess_env(workspace: Path) -> dict[str, str]:
 def run_bash(command: str) -> str:
     dangerous = ["rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"]
     if any(item in command for item in dangerous):
-        return "Error: dangerous command blocked"
+        raise PermissionError("dangerous command blocked")
     try:
         completed = subprocess.run(
             command,
@@ -373,12 +373,10 @@ def run_bash(command: str) -> str:
             text=True,
             timeout=120,
         )
-        output = (completed.stdout + completed.stderr).strip()
-        return output[:50000] if output else "(no output)"
     except subprocess.TimeoutExpired:
-        return "Error: timeout (120s)"
-    except OSError as exc:
-        return f"Error: {exc}"
+        raise TimeoutError("timeout (120s)")
+    output = (completed.stdout + completed.stderr).strip()
+    return output[:50000] if output else "(no output)"
 
 
 def run_read(path: str, limit: int | None = None) -> str:
@@ -400,7 +398,7 @@ def run_edit(path: str, old_text: str, new_text: str) -> str:
     file_path = safe_path(path)
     text = file_path.read_text(encoding="utf-8")
     if old_text not in text:
-        return f"Error: text not found in {path}"
+        raise ValueError(f"text not found in {path}")
     file_path.write_text(text.replace(old_text, new_text, 1), encoding="utf-8")
     return f"Edited {path}"
 
