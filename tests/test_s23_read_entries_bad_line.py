@@ -62,3 +62,56 @@ def test_audit_and_chain_show_bad_line_without_crash(s23, capsys, bad: bytes) ->
     s23.print_chain_detail()
     out = capsys.readouterr().out
     assert "first" in out and "second" in out and "共 3 条记录" in out
+
+
+# --- Verifier adversarial (#54) ---
+
+
+@pytest.mark.parametrize("bad", list(BAD_LINES.values()), ids=list(BAD_LINES))
+@pytest.mark.parametrize("ending", [b"", b"\n"], ids=["torn", "newline"])
+def test_bad_tail_preserves_prefix_and_numbering(s23, capsys, bad, ending):
+    s23.append_audit_entry("first", {"内容": "你好"}, "完成")
+    s23.append_audit_entry("second", {"内容": "世界"}, "成功")
+    path = s23.audit_log_path()
+    raw = path.read_bytes()
+    expected = [
+        s23.json.loads(line)
+        for line in path.read_text(encoding="utf-8").strip().split("\n")
+        if line.strip()
+    ]
+    path.write_bytes(raw + bad + ending)
+    before = path.read_bytes(), s23.audit_head_path().read_bytes()
+
+    assert s23.verify_chain() == (False, 2)
+    entries = s23.read_today_entries()
+    assert len(entries) == 3
+    assert entries[:2] == expected
+    assert all(isinstance(entry, dict) for entry in entries)
+
+    s23.print_audit()
+    audit = capsys.readouterr().out
+    assert "共 3 条记录" in audit
+    assert any(line.split()[:1] == ["3"] for line in audit.splitlines())
+    s23.print_chain_detail()
+    assert "Entry 3:" in capsys.readouterr().out
+    assert before == (path.read_bytes(), s23.audit_head_path().read_bytes())
+
+
+@pytest.mark.parametrize("separator", [b"\n", b"\r\n"], ids=["lf", "crlf"])
+def test_normal_chinese_entries_and_blank_lines(s23, separator):
+    assert s23.read_today_entries() == []
+    s23.append_audit_entry("first", {"命令": "echo 你好"}, "完成")
+    s23.append_audit_entry("second", {"路径": "中文目录"}, "成功")
+    path = s23.audit_log_path()
+    expected = [
+        s23.json.loads(line)
+        for line in path.read_text(encoding="utf-8").strip().split("\n")
+        if line.strip()
+    ]
+    lines = path.read_bytes().splitlines()
+    path.write_bytes(separator.join(
+        [b"", b" \t", lines[0], b"\t ", lines[1], b""]
+    ))
+
+    assert s23.read_today_entries() == expected
+    assert s23.verify_chain() == (True, 2)
