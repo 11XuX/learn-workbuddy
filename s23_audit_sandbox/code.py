@@ -186,9 +186,14 @@ def read_today_entries() -> list:
     if not path.exists():
         return []
     entries = []
-    for line in path.read_text().strip().split("\n"):
-        if line.strip():
-            entries.append(json.loads(line))
+    for line in path.read_bytes().split(b"\n"):
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            entry = {"action": "<unreadable line>", "result": "run /verify"}
+        entries.append(entry)
     return entries
 
 
