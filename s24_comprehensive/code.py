@@ -563,12 +563,23 @@ def execute_tool(tool_name: str, tool_input: dict,
     decision = check_permission(tool_name)
     if definition is None or decision is PermissionDecision.DENY:
         return f"Permission denied: unknown or denied tool {tool_name}"
-    if decision is PermissionDecision.ASK and (approve is None or not approve(tool_name, tool_input)):
-        return "Permission denied: user approval required"
+    if decision is PermissionDecision.ASK:
+        try:  # s04: a closed or interrupted approval UI fails closed here.
+            approved = approve is not None and bool(approve(tool_name, tool_input))
+        except (EOFError, KeyboardInterrupt):
+            approved = False
+        if not approved:
+            return "Permission denied: user approval required"
     try:
         return definition.handler(tool_input)
     except (OSError, PermissionError, KeyError) as exc:
         return f"Tool failed: {exc}"
+
+
+def console_approver(tool_name: str, tool_input: dict) -> bool:
+    """s04's CLI approval UI for the REPL: it only asks; execute_tool fails closed."""
+    print(f"\n\033[33m⚠ Approval needed: {tool_name} {json.dumps(tool_input, ensure_ascii=False)[:300]}\033[0m")
+    return input("   Allow? [y/N] ").strip().lower() == "y"
 
 
 DEFAULT_RAG_MEMORY_QUERY = "What should run before commit to verify the project?"
@@ -1353,7 +1364,7 @@ if __name__ == "__main__":
     print()
     print("命令: /status | /audit | /memory | /compact | /expert <name> | q 退出\n")
 
-    agent = ComprehensiveAgent()
+    agent = ComprehensiveAgent(approval_resolver=console_approver)
     print(f"会话已创建: {agent.session_id}\n")
 
     try:
