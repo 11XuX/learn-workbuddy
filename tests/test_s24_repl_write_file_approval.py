@@ -71,3 +71,66 @@ def test_repl_user_can_approve_write_file(repl):
 def test_repl_rejected_or_cancelled_write_is_not_executed(repl, answer):
     out, target, _ = repl(answer)
     assert "approval required" in out and not target.exists()
+
+
+# Verifier adversarial tests (#55): existing files survive rejection, every
+# write asks again, and an approved escape is still blocked by _scoped_path.
+@pytest.mark.parametrize("answer", ["n", "", "yes please", EOFError(),
+                                    KeyboardInterrupt()],
+                         ids=["no", "enter", "not-y", "eof", "ctrl-c"])
+def test_rejected_write_preserves_existing_file(repl, answer):
+    target = Path.cwd() / "n.txt"
+    target.write_text("original", encoding="utf-8")
+    out, actual, unread = repl(answer)
+    assert actual == target
+    assert "approval required" in out
+    assert target.read_text(encoding="utf-8") == "original"
+    assert not unread
+
+
+@pytest.mark.parametrize("answer", ["Y", " y "])
+def test_each_write_needs_fresh_approval(repl, answer, capsys):
+    capsys.readouterr()
+    out, target, unread = repl(answer)
+    assert out == "File written"
+    assert target.read_text(encoding="utf-8") == "hi"
+    assert not unread
+    prompt = capsys.readouterr().out
+    assert "write_file" in prompt and "n.txt" in prompt
+
+    target.write_text("keep", encoding="utf-8")
+    out, _, unread = repl("n")
+    assert "approval required" in out
+    assert target.read_text(encoding="utf-8") == "keep"
+    assert not unread
+    prompt = capsys.readouterr().out
+    assert "write_file" in prompt and "n.txt" in prompt
+
+
+def test_approved_escape_is_still_blocked(repl, monkeypatch, capsys):
+    import inspect
+
+    state = inspect.getclosurevars(repl).nonlocals
+    execute = state["g"]["execute_tool"]
+    approve = state["seen"]["agent"].approval_resolver
+    workspace = Path.cwd()
+    nested = workspace / "nested"
+    nested.mkdir()
+    outside = workspace / "outside.txt"
+    outside.write_text("keep", encoding="utf-8")
+    monkeypatch.chdir(nested)
+    calls = []
+
+    def allow(prompt=""):
+        calls.append(prompt)
+        return "y"
+
+    monkeypatch.setattr(builtins, "input", allow)
+    capsys.readouterr()
+    out = execute("write_file", {"path": "../outside.txt", "content": "bad"},
+                  approve)
+    assert len(calls) == 1
+    assert out.startswith("Tool failed:") and "escapes workspace" in out
+    assert outside.read_text(encoding="utf-8") == "keep"
+    prompt = capsys.readouterr().out
+    assert "write_file" in prompt and "../outside.txt" in prompt
