@@ -1,12 +1,9 @@
 """s04: a handler that fails must end as FAILED, not SUCCEEDED.
 
-README s04 "ToolExecutionResult" / "失败路径": FAILED covers a handler that
-fails, BLOCKED/FAILED become error tool_results (is_error), and the audit
-keeps failures apart from successes. But run_read / run_write / run_edit
-catch their own errors and return "Error: ..." text, so GovernedToolRunner
-records SUCCEEDED, the tool_result has no is_error, and the audit trail says
-outcome=succeeded. (run_bash is out of scope: test_permission_gates.py pins
-its "Error: spawn failed" text.)
+README s04 :43 / :107-110 / :247: handler failures stay apart from successes,
+become is_error tool_results and audit outcome=failed, with the reason kept for
+the model. A normal result that starts with "Error" stays SUCCEEDED (no prefix
+sniffing). run_bash is out of scope (test_permission_gates.py pins its text).
 """
 
 from __future__ import annotations
@@ -36,34 +33,47 @@ def load_s04(monkeypatch, workdir: Path):
         if saved is not None:
             sys.modules["anthropic"] = saved
     monkeypatch.setattr(module, "WORKDIR", workdir.resolve())
-    return module
+    (workdir / "notes.txt").write_text("Error: hello\n", encoding="utf-8")
+    (workdir / "folder").mkdir()
+    audit = module.AuditTrail()
+    runner = module.GovernedToolRunner(
+        policy=module.PermissionPolicy(module.WorkspaceScope(workdir)),
+        handlers=module.TOOL_HANDLERS,
+        approver=lambda _decision: True,
+        hooks=module.build_hooks(audit),
+    )
+    return module, runner, audit
 
 
 CASES = [
-    # (tool, arguments) that pass policy but fail inside the handler
-    ("read_file", {"path": "missing.txt"}),
-    ("edit_file", {"path": "notes.txt", "old_text": "absent", "new_text": "x"}),
-    ("write_file", {"path": "folder", "content": "x"}),
+    # (tool, arguments that pass policy but fail in the handler, reason, approval)
+    ("read_file", {"path": "missing.txt"}, "No such file", "allowed"),
+    ("edit_file", {"path": "notes.txt", "old_text": "absent", "new_text": "x"},
+     "text not found in notes.txt", "approved"),
+    ("write_file", {"path": "folder", "content": "x"}, "Is a directory", "approved"),
 ]
 
 
-@pytest.mark.parametrize(("tool", "arguments"), CASES, ids=[c[0] for c in CASES])
-def test_failed_handler_is_recorded_as_failed(monkeypatch, tmp_path: Path, tool, arguments) -> None:
-    s04 = load_s04(monkeypatch, tmp_path)
-    (tmp_path / "notes.txt").write_text("hello\n", encoding="utf-8")
-    (tmp_path / "folder").mkdir()
-    audit = s04.AuditTrail()
-    runner = s04.GovernedToolRunner(
-        policy=s04.PermissionPolicy(s04.WorkspaceScope(tmp_path)),
-        handlers=s04.TOOL_HANDLERS,
-        approver=lambda _decision: True,
-        hooks=s04.build_hooks(audit),
-    )
-
+@pytest.mark.parametrize(("tool", "arguments", "reason", "approval"), CASES, ids=[c[0] for c in CASES])
+def test_failed_handler_is_recorded_as_failed(monkeypatch, tmp_path: Path, tool, arguments, reason, approval) -> None:
+    s04, runner, audit = load_s04(monkeypatch, tmp_path)
     result = runner.run(s04.ToolRequest("call_1", tool, arguments))
 
-    assert result.permission.allowed is True  # policy let it through
+    assert [r.outcome for r in audit.records if r.event == "permission"] == [approval]
     assert result.status is s04.ToolExecutionStatus.FAILED, result.content
     assert result.to_protocol_block().get("is_error") is True
-    assert audit.records[-1].outcome == "failed"
-    assert (tmp_path / "notes.txt").read_text(encoding="utf-8") == "hello\n"
+    assert audit.records[-1].event == "result" and audit.records[-1].outcome == "failed"
+    assert result.content.startswith(f"Execution failed for {tool}: "), result.content
+    assert reason in result.content  # the model still learns why it failed
+    if tool == "edit_file":  # a failed edit must not touch the file
+        assert (tmp_path / "notes.txt").read_text(encoding="utf-8") == "Error: hello\n"
+
+
+def test_normal_text_starting_with_error_is_still_succeeded(monkeypatch, tmp_path: Path) -> None:
+    s04, runner, audit = load_s04(monkeypatch, tmp_path)
+    result = runner.run(s04.ToolRequest("call_1", "read_file", {"path": "notes.txt"}))
+
+    assert result.status is s04.ToolExecutionStatus.SUCCEEDED, result.content
+    assert result.content == "Error: hello"
+    assert "is_error" not in result.to_protocol_block()
+    assert audit.records[-1].outcome == "succeeded"
