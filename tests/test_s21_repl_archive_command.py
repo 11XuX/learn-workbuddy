@@ -74,3 +74,49 @@ def test_archive_soft_deletes_only_the_current_session(run_repl):
     assert sessions[1][1] == "archived"
     assert sql("SELECT content FROM messages WHERE session_id = "
                f"'{current}'") == [], "archived session kept receiving messages"
+
+
+# --- Verifier adversarial tests (#58) ---
+# /archive soft-deletes only the current session, keeps all data, and stops the REPL.
+def test_archive_preserves_data_and_stops_input(run_repl, monkeypatch, capsys):
+    run, sql = run_repl
+    original_run_path = runpy.run_path
+    reads = []
+
+    def answer(prompt=""):
+        assert not reads, "归档后仍读取输入"
+        reads.append(True)
+        current = sql("SELECT id FROM sessions")[0][0]
+        sql(
+            "INSERT INTO sessions "
+            "(id, cwd, title, status, created_at, updated_at) "
+            "VALUES ('other', '.', 'other', 'active', "
+            "'2000-01-01', '9999-12-31')"
+        )
+        sql(
+            "INSERT INTO messages (session_id, role, content, created_at) "
+            "SELECT id, 'user', 'keep:' || id, '2000-01-01' FROM sessions"
+        )
+        assert current != "other"
+        return "  /archive  "
+
+    def invoke(*args, **kwargs):
+        monkeypatch.setattr(builtins, "input", answer)
+        return original_run_path(*args, **kwargs)
+
+    monkeypatch.setattr(runpy, "run_path", invoke)
+    assert not run([])
+    assert len(reads) == 1
+    assert sql("SELECT status FROM sessions WHERE id = 'other'") == [("active",)]
+    assert sql("SELECT status FROM sessions WHERE id != 'other'") == [
+        ("archived",)
+    ]
+    assert sql(
+        "SELECT session_id, role, content FROM messages ORDER BY session_id"
+    ) == [
+        (sid, "user", "keep:" + sid)
+        for (sid,) in sql("SELECT id FROM sessions ORDER BY id")
+    ]
+    output = capsys.readouterr().out
+    assert "命令: /stats | /sessions | /tools | /archive | q 退出" in output
+    assert "数据库已关闭" in output
