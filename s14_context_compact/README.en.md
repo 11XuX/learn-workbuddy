@@ -208,10 +208,10 @@ durable_context = render_durable_context(
 
 ## How It Works
 
-### Layer 1: Trim Tool Results
+### Token Counting and Threshold Check
 
 ```python
-TOKEN_THRESHOLD = 100_000  # triggers compaction at the threshold
+TOKEN_THRESHOLD = 80_000  # triggers compaction at the threshold
 
 def estimate_tokens(messages: list) -> int:
     """Roughly estimate the token count of messages.
@@ -233,34 +233,40 @@ def estimate_tokens(messages: list) -> int:
     return total
 ```
 
-### Layer 2: Remove Duplicate Files
+### Layer 1: Trim Tool Results
 
 ```python
 MAX_TOOL_RESULT_TOKENS = 5000
 
-def truncate_tool_results(messages: list) -> list:
-    """Layer 1: Truncate tool results that exceed 5,000 tokens."""
+def truncate_tool_results(messages: list) -> tuple[list, int]:
+    """Layer 1: Truncate tool results over 5,000 tokens; return (messages, tokens saved)."""
+    validate_tool_protocol(messages)
+    saved = 0
     for msg in messages:
-        if msg["role"] != "user":
+        if msg.get("role") != "user":
             continue
         content = msg.get("content")
         if not isinstance(content, list):
             continue
         for block in content:
             if isinstance(block, dict) and block.get("type") == "tool_result":
-                result = block.get("content", "")
-                tokens = len(str(result)) // 4
+                result = str(block.get("content", ""))
+                tokens = len(result) // 4
                 if tokens > MAX_TOOL_RESULT_TOKENS:
                     # Only bounded truncation is done here; true summarization belongs to Layer 4
-                    truncated = str(result)[:MAX_TOOL_RESULT_TOKENS * 4]
+                    max_chars = MAX_TOOL_RESULT_TOKENS * 4
+                    original_len = len(result)
                     block["content"] = (
-                        truncated +
-                        f"\n\n[... truncated, original length {len(str(result))} characters ...]"
+                        result[:max_chars]
+                        + f"\n\n[... truncated: original {original_len} characters, "
+                        f"kept {max_chars} characters ...]"
                     )
-    return messages
+                    saved += tokens - MAX_TOOL_RESULT_TOKENS
+    validate_tool_protocol(messages)
+    return messages, saved
 ```
 
-### Layer 3: Prune Message History
+### Layer 2: Remove Duplicate Files
 
 ```python
 def dedup_file_reads(messages: list) -> tuple[list, int]:
@@ -290,7 +296,7 @@ def dedup_file_reads(messages: list) -> tuple[list, int]:
     return deduplicated, old_count - estimate_tokens(deduplicated)
 ```
 
-### Layer 4: Summarize the Conversation
+### Layer 3: Prune Message History
 
 ```python
 KEEP_RECENT_TURNS = 6  # keep the most recent 6 turns
@@ -311,7 +317,7 @@ def prune_old_messages(messages: list) -> tuple[list, int]:
     return pruned, old_count - estimate_tokens(pruned)
 ```
 
-### Where It Sits in the Loop
+### Layer 4: Summarize the Conversation
 
 ```python
 def generate_summary(messages: list, summarizer) -> tuple[list, int]:
@@ -345,7 +351,7 @@ def generate_summary(messages: list, summarizer) -> tuple[list, int]:
     return summarized, estimate_tokens(messages) - estimate_tokens(summarized)
 ```
 
-### Stop Conditions in the Teaching Implementation
+### Where It Sits in the Loop
 
 ```python
 def agent_loop(messages: list, durable_state: DurableContextState, resolver):
@@ -366,7 +372,7 @@ def agent_loop(messages: list, durable_state: DurableContextState, resolver):
         # ... normal loop ...
 ```
 
-## Memory Writes after Compaction
+## Stop Conditions in the Teaching Implementation
 
 ```text
 Below 80,000 tokens ──> do not compact; return a deep copy
@@ -375,14 +381,14 @@ At 80,000 tokens ──> L1 → check → L2 → check → L3 → check → L4
 Still at 120,000 after L4 ──> raise a typed error without requesting the provider
 ```
 
-## Select Memory Hits, Compress Messages, Preserve Selection Proof
+## Compaction Is Not a Memory Write
 
 ```text
 Transcript events ──derived──> messages ──lossy compaction──> compacted messages
 Memory records ───────────> DurableContextState ──lossless rendering──> system context
 ```
 
-### What Must Remain Visible
+### Select Memory Hits, Compress Messages, Preserve Selection Proof
 
 ```text
 Recall candidates
@@ -393,9 +399,9 @@ selected hits ──capture_retrieval_evidence()──> immutable RetrievalEvide
       └── recalled text enters the Prompt                  └── bypasses L1–L4
 ```
 
-## Harness Boundary
+## What Production Still Needs
 
-### Code Walkthrough
+### As a Shared Harness Boundary
 
 ## Code Walkthrough
 

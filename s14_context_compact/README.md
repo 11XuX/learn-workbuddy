@@ -273,7 +273,7 @@ durable_context = render_durable_context(
 每次 API 调用前，先估算当前 `messages` 的 token 数量。超过阈值就触发压缩：
 
 ```python
-TOKEN_THRESHOLD = 100_000  # 触发压缩的阈值
+TOKEN_THRESHOLD = 80_000  # 触发压缩的阈值
 
 def estimate_tokens(messages: list) -> int:
     """粗略估算 messages 的 token 数。
@@ -302,26 +302,32 @@ def estimate_tokens(messages: list) -> int:
 ```python
 MAX_TOOL_RESULT_TOKENS = 5000
 
-def truncate_tool_results(messages: list) -> list:
-    """Layer 1: 截断超过 5000 token 的工具结果。"""
+def truncate_tool_results(messages: list) -> tuple[list, int]:
+    """Layer 1: 截断超过 5000 token 的工具结果，返回 (messages, 节省的 token)。"""
+    validate_tool_protocol(messages)
+    saved = 0
     for msg in messages:
-        if msg["role"] != "user":
+        if msg.get("role") != "user":
             continue
         content = msg.get("content")
         if not isinstance(content, list):
             continue
         for block in content:
             if isinstance(block, dict) and block.get("type") == "tool_result":
-                result = block.get("content", "")
-                tokens = len(str(result)) // 4
+                result = str(block.get("content", ""))
+                tokens = len(result) // 4
                 if tokens > MAX_TOOL_RESULT_TOKENS:
                     # 这里只做有界截断；真正摘要属于 Layer 4
-                    truncated = str(result)[:MAX_TOOL_RESULT_TOKENS * 4]
+                    max_chars = MAX_TOOL_RESULT_TOKENS * 4
+                    original_len = len(result)
                     block["content"] = (
-                        truncated +
-                        f"\n\n[... 已截断, 原始长度 {len(str(result))} 字符 ...]"
+                        result[:max_chars]
+                        + f"\n\n[... 已截断: 原始 {original_len} 字符, "
+                        f"保留 {max_chars} 字符 ...]"
                     )
-    return messages
+                    saved += tokens - MAX_TOOL_RESULT_TOKENS
+    validate_tool_protocol(messages)
+    return messages, saved
 ```
 
 ### Layer 2: 文件内容去重
