@@ -23,49 +23,54 @@ CODE = ROOT / "s21_sqlite_database" / "code.py"
 
 @pytest.fixture
 def run_repl(tmp_path, monkeypatch):
+    db_path = tmp_path / "home" / "workbuddy.db"
+
+    def sql(query):
+        db = sqlite3.connect(str(db_path))
+        try:
+            rows = db.execute(query).fetchall()
+            db.commit()
+            return rows
+        finally:
+            db.close()
+
     def run(answers):
         answers = list(answers)
-
-        def fake_input(prompt: str = "") -> str:
-            if not answers:
-                raise EOFError
-            return answers.pop(0)
-
         saved = sys.modules.pop("anthropic", None)
         monkeypatch.syspath_prepend(str(ROOT / "tests" / "stubs"))
         monkeypatch.setenv("MODEL_ID", "offline-test-model")
         monkeypatch.setenv("WORKBUDDY_HOME", str(tmp_path / "home"))
         monkeypatch.setattr(sys, "argv", [str(CODE)])
-        monkeypatch.setattr(builtins, "input", fake_input)
+        monkeypatch.setattr(builtins, "input",
+                            lambda prompt="": answers.pop(0) if answers else "q")
         monkeypatch.chdir(tmp_path)
-        model_called = False
         try:
             runpy.run_path(str(CODE), run_name="__main__")
         except RuntimeError as exc:  # stub: messages.create() was reached
-            model_called = "messages.create()" in str(exc)
-            if not model_called:
-                raise
+            assert "messages.create()" in str(exc)
+            return True
         finally:
             sys.modules.pop("anthropic", None)
             if saved is not None:
                 sys.modules["anthropic"] = saved
-        db = sqlite3.connect(str(tmp_path / "home" / "workbuddy.db"))
-        try:
-            sessions = db.execute("SELECT id, status FROM sessions").fetchall()
-            messages = db.execute("SELECT content FROM messages").fetchall()
-        finally:
-            db.close()
-        return model_called, sessions, [m[0] for m in messages]
-    return run
+        return False
+    return run, sql
 
 
 def test_archive_is_a_local_command_not_a_model_prompt(run_repl):
-    model_called, sessions, messages = run_repl(["/archive", "q"])
-    assert not model_called, "/archive was sent to the model"
-    assert "/archive" not in messages
-    assert len(sessions) == 1
+    run, sql = run_repl
+    assert not run(["/archive", "q"]), "/archive was sent to the model"
+    assert ("/archive",) not in sql("SELECT content FROM messages")
 
 
-def test_archive_marks_the_current_session_archived(run_repl):
-    _, sessions, _ = run_repl(["/archive", "q"])
-    assert [status for _, status in sessions] == ["archived"]
+def test_archive_soft_deletes_only_the_current_session(run_repl):
+    run, sql = run_repl
+    run(["q"])  # an earlier session the user still has
+    sql("UPDATE sessions SET id = 'sess_earlier'")
+    run(["/archive", "hello", "q"])
+    sessions = sql("SELECT id, status FROM sessions ORDER BY rowid")
+    assert sessions[0] == ("sess_earlier", "active")
+    current = sessions[1][0]
+    assert sessions[1][1] == "archived"
+    assert sql("SELECT content FROM messages WHERE session_id = "
+               f"'{current}'") == [], "archived session kept receiving messages"
