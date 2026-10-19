@@ -62,6 +62,11 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)
 if os.getenv("ANTHROPIC_BASE_URL"): os.environ.pop("ANTHROPIC_AUTH_TOKEN", None)
+if not os.environ.get("MODEL_ID"):
+    raise SystemExit(
+        "MODEL_ID is not set. Copy .env.example to .env and fill in "
+        "ANTHROPIC_API_KEY and MODEL_ID (see README quick start)."
+    )
 
 WORKDIR = Path.cwd()
 DEMO_RING_BUFFER_SIZE = 1024 * 1024
