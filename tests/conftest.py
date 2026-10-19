@@ -72,3 +72,47 @@ def mini_server(tmp_path: Path):
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait(timeout=5)
+
+
+@pytest.fixture()
+def load_chapter():
+    """Return load(chapter, module_name, workdir) that imports a chapter's code.py offline.
+
+    Uses the tests/stubs anthropic stub and an offline MODEL_ID, imports with the
+    cwd set to workdir, then restores cwd, MODEL_ID, the cached anthropic module
+    and sys.path. Teardown removes only the modules this fixture loaded.
+    """
+    import importlib.util
+
+    loaded: list[str] = []
+
+    def load(chapter: str, module_name: str, workdir: Path):
+        stub_dir = ROOT / "tests" / "stubs"
+        sys.path.insert(0, str(stub_dir))
+        saved_anthropic = sys.modules.pop("anthropic", None)
+        old_model = os.environ.get("MODEL_ID")
+        old_cwd = os.getcwd()
+        os.environ["MODEL_ID"] = "offline-test-model"
+        os.chdir(workdir)  # chapters may read Path.cwd() at import time
+        try:
+            spec = importlib.util.spec_from_file_location(module_name, ROOT / chapter / "code.py")
+            module = importlib.util.module_from_spec(spec)
+            assert spec.loader is not None
+            sys.modules[module_name] = module
+            loaded.append(module_name)
+            spec.loader.exec_module(module)
+            return module
+        finally:
+            os.chdir(old_cwd)
+            sys.path.remove(str(stub_dir))
+            sys.modules.pop("anthropic", None)
+            if saved_anthropic is not None:
+                sys.modules["anthropic"] = saved_anthropic
+            if old_model is None:
+                os.environ.pop("MODEL_ID", None)
+            else:
+                os.environ["MODEL_ID"] = old_model
+
+    yield load
+    for name in loaded:
+        sys.modules.pop(name, None)
