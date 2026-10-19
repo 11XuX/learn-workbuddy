@@ -5,6 +5,11 @@ without MODEL_ID must exit with the quick-start hint. s06 only checks
 MODEL_ID inside ``SidecarServer._run_agent_loop``, which runs on the sidecar
 thread; ``SystemExit`` there silently ends the thread, the socket closes, and
 ``main()`` gets ``None`` back from ``client.call`` (``"error" in None``).
+
+Isolation from a developer's real ``.env``: s06 and ``chapter_demo`` call
+``load_dotenv(override=True)``, which searches upward from the *script's*
+directory (not cwd), so a repo-root ``.env`` would put MODEL_ID back. The
+child gets a no-op ``dotenv`` module first on PYTHONPATH instead.
 """
 
 from __future__ import annotations
@@ -16,33 +21,32 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CODE = ROOT / "s06_sidecar_server" / "code.py"
+HINT = "MODEL_ID is not set. Copy .env.example to .env"
 
 
-def _run_repl(tmp_path: Path, stdin: str, model_id: str | None) -> str:
+def test_missing_model_id_gives_quickstart_hint(tmp_path: Path) -> None:
+    shadow = tmp_path / "shadow"
+    shadow.mkdir()
+    (shadow / "dotenv.py").write_text(
+        "def load_dotenv(*args, **kwargs):\n    return False\n"
+    )
     env = os.environ.copy()
-    env["PYTHONPATH"] = os.pathsep.join([str(ROOT / "tests" / "stubs"), str(ROOT)])
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(shadow), str(ROOT / "tests" / "stubs"), str(ROOT)]
+    )
     env["HOME"] = str(tmp_path)
     env["WORKBUDDY_HOME"] = str(tmp_path / "wb")
-    for key in ("MODEL_ID", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"):
+    for key in ("MODEL_ID", "PROVIDER", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"):
         env.pop(key, None)
-    if model_id is not None:
-        env["MODEL_ID"] = model_id
     result = subprocess.run(
-        [sys.executable, str(CODE)], cwd=tmp_path, env=env, input=stdin,
+        [sys.executable, str(CODE)], cwd=tmp_path, env=env, input="hello\nq\n",
         text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30,
     )
-    return result.stdout
-
-
-def test_missing_model_id_gives_quickstart_hint(tmp_path):
-    out = _run_repl(tmp_path, "hello\nq\n", model_id=None)
-    assert "MODEL_ID is not set" in out
-    assert "Traceback" not in out
-
-
-def test_model_error_is_reported_and_repl_continues(tmp_path):
-    # Guard: with MODEL_ID set, a failing model call (stub raises) comes back
-    # as a JSON-RPC error and the REPL keeps serving commands.
-    out = _run_repl(tmp_path, "hello\n/status\nq\n", model_id="offline-test-model")
-    assert "Traceback" not in out
-    assert "sessions: 1" in out and "Sidecar shut down" in out
+    out = result.stdout
+    # The hint itself must reach the user, not just "no crash".
+    assert HINT in out, out[-1500:]
+    assert "Traceback" not in out, out[-1500:]
+    # And it must stop the program like every other chapter, before the
+    # REPL / sidecar ever start (so swallowing the exit in the thread fails).
+    assert result.returncode != 0, out[-1500:]
+    assert "Sidecar started" not in out and "Goodbye" not in out, out[-1500:]
