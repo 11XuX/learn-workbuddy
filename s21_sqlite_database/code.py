@@ -488,6 +488,10 @@ if __name__ == "__main__":
             if query == "/tools":
                 print_tool_stats(session_id)
                 continue
+            if query == "/archive":
+                db.archive_session(session_id)
+                print("  会话已归档，退出 REPL")
+                break
             if query.startswith("/title "):
                 db.update_session_title(session_id, query[7:])
                 print(f"  标题已更新")
