@@ -433,3 +433,79 @@ def test_r2_other_xml_attribute_names_cannot_supply_viewbox(harness, attribute):
     assert renderer.widget_count == 0
     storage.__truediv__.assert_not_called()
     browser.assert_not_called()
+
+
+@pytest.mark.parametrize("model_value", [None, "verifier-original-model"],
+                         ids=["model-absent", "model-present"])
+@pytest.mark.parametrize("cached_anthropic", [False, True],
+                         ids=["anthropic-absent", "anthropic-present"])
+def test_adversarial_load_chapter_restores_and_cleans_only_owned_modules(
+    tmp_path, monkeypatch, request, model_value, cached_anthropic
+):
+    import os
+
+    root = Path(__file__).resolve().parents[1]
+    # The chapter itself may insert root; establish it before taking the snapshot.
+    monkeypatch.syspath_prepend(str(root))
+    if model_value is None:
+        monkeypatch.delenv("MODEL_ID", raising=False)
+    else:
+        monkeypatch.setenv("MODEL_ID", model_value)
+
+    cached = SimpleNamespace(verifier_cached_anthropic=True)
+    if cached_anthropic:
+        monkeypatch.setitem(sys.modules, "anthropic", cached)
+    else:
+        monkeypatch.delitem(sys.modules, "anthropic", raising=False)
+
+    unrelated_name = "_s19_verifier_unrelated_module"
+    unrelated = SimpleNamespace(verifier_unrelated=True)
+    monkeypatch.setitem(sys.modules, unrelated_name, unrelated)
+
+    names = [
+        "_s19_verifier_loaded_module",
+        "_s19_verifier_failed_module",
+    ]
+    assert all(name not in sys.modules for name in names)
+    before_cwd = Path.cwd()
+    before_path = list(sys.path)
+
+    def assert_environment_restored():
+        assert Path.cwd() == before_cwd
+        assert sys.path == before_path
+        if model_value is None:
+            assert "MODEL_ID" not in os.environ
+        else:
+            assert os.environ["MODEL_ID"] == model_value
+        if cached_anthropic:
+            assert sys.modules["anthropic"] is cached
+        else:
+            assert "anthropic" not in sys.modules
+        assert sys.modules[unrelated_name] is unrelated
+
+    def assert_teardown():
+        try:
+            assert all(name not in sys.modules for name in names)
+            assert_environment_restored()
+        finally:
+            for name in names:
+                sys.modules.pop(name, None)
+
+    # Register first: the dynamically requested fixture tears down before this.
+    request.addfinalizer(assert_teardown)
+    load = request.getfixturevalue("load_chapter")
+
+    module = load("s19_visualizer", names[0], tmp_path)
+    assert sys.modules[names[0]] is module
+    assert module.__name__ == names[0]
+    assert module.MODEL == "offline-test-model"
+    assert module.WORKDIR == tmp_path
+    assert module.WIDGET_DIR == tmp_path / ".widgets"
+    assert module.WIDGET_DIR.is_dir()
+    assert_environment_restored()
+
+    # Missing source fails inside exec_module, after registration and tracking.
+    with pytest.raises(FileNotFoundError):
+        load("s19_visualizer/__verifier_missing_chapter__", names[1], tmp_path)
+    assert_environment_restored()
+    assert sys.modules[names[0]] is module
