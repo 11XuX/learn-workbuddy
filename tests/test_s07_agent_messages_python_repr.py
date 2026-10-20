@@ -1,4 +1,8 @@
-"""Reproduce: /agent/messages stringifies list content with Python repr."""
+"""Reproduce: /agent/messages stringifies list content with Python repr.
+
+HTTP GET /agent/messages only wraps transport_messages() (code.py :266-267);
+this card locks that view. Acceptance (b): list/SDK content -> json.dumps str.
+"""
 
 from __future__ import annotations
 
@@ -43,7 +47,7 @@ def load_s07(monkeypatch):
     return mod
 
 def test_transport_messages_not_python_repr(monkeypatch, tmp_path: Path) -> None:
-    """List content from the agent loop must stay a JSON-safe transcript view."""
+    """List content must be JSON text in the view, not Python repr."""
 
     class TextBlock:
         def __init__(self, text: str) -> None:
@@ -56,7 +60,7 @@ def test_transport_messages_not_python_repr(monkeypatch, tmp_path: Path) -> None
     mgr = s07.SessionManager()
     rt = mgr.get_session(mgr.create_session(str(tmp_path)))
     assert rt is not None
-    # Mirrors _call_provider: response.content list + tool_results list.
+    # Same shapes _call_provider writes: TextBlock list + tool_results list.
     rt.record.messages = [
         {"role": "user", "content": "hi"},
         {"role": "assistant", "content": [TextBlock("hello from model")]},
@@ -68,8 +72,9 @@ def test_transport_messages_not_python_repr(monkeypatch, tmp_path: Path) -> None
         },
     ]
     view = rt.transport_messages()
+    assert view[0]["content"] == "hi"
     assert "TextBlock" not in view[1]["content"]
-    tool = view[2]["content"]
-    if tool.lstrip().startswith("["):
-        json.loads(tool)
+    assert json.loads(view[1]["content"])[0]["text"] == "hello from model"
+    tool = json.loads(view[2]["content"])
+    assert tool[0]["tool_use_id"] == "tu_1" and tool[0]["content"] == "ok"
     mgr.shutdown_all()
