@@ -591,8 +591,25 @@ class SessionProcess:
     def transport_messages(self) -> list[dict[str, str]]:
         """Return a JSON-safe transcript view for the teaching HTTP endpoint."""
 
+        def json_safe_content(content: object) -> str:
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                blocks: list[dict[str, object]] = []
+                for item in content:
+                    if isinstance(item, Mapping):
+                        blocks.append(dict(item))
+                    else:
+                        # SDK content block (e.g. TextBlock) -> JSON object
+                        blocks.append({"type": item.type, "text": item.text})
+                return json.dumps(blocks, ensure_ascii=False)
+            return str(content)
+
         return [
-            {"role": str(message.get("role", "")), "content": str(message.get("content", ""))}
+            {
+                "role": str(message.get("role", "")),
+                "content": json_safe_content(message.get("content", "")),
+            }
             for message in self.messages
         ]
 
