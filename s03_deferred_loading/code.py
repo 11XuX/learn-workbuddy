@@ -660,6 +660,11 @@ def handle_tool_search(registry: ToolRegistry,
                        top_k: int = 3) -> str:
     """Discover deferred tools and place only matching schemas in the session."""
 
+    if tool_names is not None and not isinstance(tool_names, list):
+        return "Error: tool_names must be an array of tool name strings."
+    if queries is not None and not isinstance(queries, list):
+        return "Error: queries must be an array of query strings."
+
     if tool_names:
         return registry.load_by_name(tool_names).render()
 
