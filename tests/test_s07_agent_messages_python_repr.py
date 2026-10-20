@@ -78,3 +78,67 @@ def test_transport_messages_not_python_repr(monkeypatch, tmp_path: Path) -> None
     tool = json.loads(view[2]["content"])
     assert tool[0]["tool_use_id"] == "tu_1" and tool[0]["content"] == "ok"
     mgr.shutdown_all()
+
+
+def test_transport_messages_preserves_blocks_and_tool_fields(
+    monkeypatch, tmp_path: Path
+) -> None:
+    class TextBlock:
+        def __init__(self, text: str) -> None:
+            self.type = "text"
+            self.text = text
+
+    s07 = load_s07(monkeypatch)
+    mgr = s07.SessionManager()
+    try:
+        rt = mgr.get_session(mgr.create_session(str(tmp_path)))
+        assert rt is not None
+        tool = {
+            "type": "tool_result",
+            "tool_use_id": "tu_中文",
+            "content": "完成\n含有 '单引号' 和 \"双引号\"",
+            "is_error": False,
+        }
+        messages = [
+            {"role": "assistant", "content": [TextBlock("你好"), TextBlock("世界")]},
+            {"role": "user", "content": [tool]},
+        ]
+        rt.record.messages = messages
+        view = rt.transport_messages()
+        assert isinstance(view, list)
+        assert all(isinstance(row, dict) for row in view)
+        assert all(isinstance(value, str) for row in view for value in row.values())
+        assert json.loads(view[0]["content"]) == [
+            {"type": "text", "text": "你好"},
+            {"type": "text", "text": "世界"},
+        ]
+        assert json.loads(view[1]["content"]) == [tool]
+        assert rt.record.messages is messages
+        assert messages[0]["content"][0].text == "你好"
+        assert messages[1]["content"][0] == tool
+    finally:
+        mgr.shutdown_all()
+
+
+def test_transport_messages_preserves_strings_roles_and_empty_list(
+    monkeypatch, tmp_path: Path
+) -> None:
+    s07 = load_s07(monkeypatch)
+    mgr = s07.SessionManager()
+    try:
+        rt = mgr.get_session(mgr.create_session(str(tmp_path)))
+        assert rt is not None
+        contents = ["hi", '[{"text":"中文"}]', "", []]
+        rt.record.messages = [
+            {"role": role, "content": content}
+            for role, content in zip(["user", "assistant", None, 7], contents)
+        ] + [{}]
+        assert rt.transport_messages() == [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": contents[1]},
+            {"role": "None", "content": ""},
+            {"role": "7", "content": "[]"},
+            {"role": "", "content": ""},
+        ]
+    finally:
+        mgr.shutdown_all()
