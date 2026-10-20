@@ -56,7 +56,7 @@ WorkBuddy 的 Skills 系统解决这个问题。每个技能是一个目录，�
 
 ## 解决方案
 
-两级存储 + 按需加载：
+两级存储 + 按需加载（下图为**生产形态**；本教学 REPL 当前不读这些目录，见「工作原理」教学边界）：
 
 ```
 技能存储:
@@ -106,6 +106,8 @@ WorkBuddy 的 Skills 系统解决这个问题。每个技能是一个目录，�
 ---
 
 ## 工作原理
+
+> **教学边界（当前）**：生产级 Skills 会扫描用户级 `~/.workbuddy/skills` 与项目级 `{workspace}/.workbuddy/skills` 下的 `*/SKILL.md`。**本教学章当前**的 `build_skill_index()` 只从内存字典 `SEED_SKILLS` 建索引；`create_skill` / `approve` 只改内存中的技能索引与 `pending_skills`，进程退出即消失。下文目录图与 `scanSkillDir` 示意标为**生产形态**——本教学 REPL **当前**不读这些目录（不排除日后接入磁盘加载器）。
 
 ### SKILL.md 结构
 
@@ -186,38 +188,26 @@ def parse_skill_md(filepath: Path) -> dict | None:
 
 ### 索引构建
 
-启动时扫描技能目录，只解析 frontmatter，不加载正文：
+教学版从内存 `SEED_SKILLS` 建索引（生产级才扫描磁盘目录）；解析 frontmatter，正文已在内存中：
 
 ```python
 def build_skill_index() -> list[dict]:
-    """扫描技能目录, 构建索引。
+    """从 SEED_SKILLS 建索引（教学版）。
 
-    只提取 frontmatter 信息 (title, summary, read_when)。
-    完整内容 (content) 不加载 — 按需读取。
-
-    用户级和项目级都扫描。项目级优先 (更具体)。
+    只解析 frontmatter (title, summary, read_when)；正文已在内存中，按需标记 loaded。
+    # 生产级改为扫描 Path.home()/".workbuddy"/"skills" 与 WORKDIR/".workbuddy"/"skills"。
     """
     index = []
-    skill_dirs = [
-        Path.home() / ".workbuddy" / "skills",           # 用户级
-        WORKDIR / ".workbuddy" / "skills",                # 项目级
-    ]
-
-    for skill_dir in skill_dirs:
-        if not skill_dir.exists():
-            continue
-        for skill_md in skill_dir.glob("*/SKILL.md"):
-            skill = parse_skill_md(skill_md)
-            if skill:
-                # 索引不含 content — 太大
-                index.append({
-                    "title": skill["title"],
-                    "summary": skill["summary"],
-                    "read_when": skill["read_when"],
-                    "path": skill["path"],
-                    "loaded": False,  # 标记是否已加载完整内容
-                })
-
+    for name, content in SEED_SKILLS.items():
+        fm, body = parse_frontmatter(content)
+        index.append({
+            "title": fm.get("title", name),
+            "summary": fm.get("summary", ""),
+            "read_when": fm.get("read_when", []),
+            "path": f"(memory)/{name}/SKILL.md",
+            "content": body,
+            "loaded": False,
+        })
     return index
 ```
 
@@ -246,23 +236,20 @@ def match_skill(user_input: str) -> str | None:
 匹配到技能时，读取完整 SKILL.md 内容，注入系统提示：
 
 ```python
-def load_skill(title: str) -> bool:
-    """加载技能的完整内容到上下文。
+def load_skill(title: str) -> str:
+    """加载技能完整内容到上下文（教学版：内容已在索引里）。
 
     1. 在索引中找到技能
-    2. 读取 SKILL.md 完整内容
-    3. 标记为已加载
-    4. 触发系统提示重新组装 (s15)
+    2. 标记为已加载（不再从 Path 读盘）
+    3. 返回状态文案与正文
     """
     for skill in skill_index:
-        if skill["title"] == title and not skill["loaded"]:
-            full = parse_skill_md(Path(skill["path"]))
+        if skill["title"] == title:
+            if skill["loaded"]:
+                return f"技能 '{title}' 已在上下文中。"
             skill["loaded"] = True
-            skill["content"] = full["content"]
-            # 触发 prompt 重新组装
-            reassemble_prompt()
-            return True
-    return False
+            return f"技能 '{title}' 已加载。内容:\n{skill['content']}"
+    return f"未找到技能 '{title}'。可用: {[s['title'] for s in skill_index]}"
 ```
 
 ### Skill 工具
@@ -282,45 +269,38 @@ def skill_tool(skill: str) -> str:
 
 ### 技能创建
 
-模型完成任务后，可以调用 `SkillCreate` 工具提议把流程保存为新技能；harness 先审计，再决定是否写入：
+模型完成任务后，可以调用 `SkillCreate` 工具提议把流程保存为新技能；harness 先审计，再决定是拒绝、进 `pending_skills`，还是写入内存索引（教学版不落盘）：
 
 ```python
-def create_skill(title: str, summary: str, content: str) -> str:
-    """创建新技能。
+def create_skill(title: str, summary: str, read_when: list[str],
+                 content: str, permissions=None) -> str:
+    """创建新技能（教学版：只改内存索引 / pending_skills，不落盘）。
 
-    生产级 harness 常用 SkillManage 工具, 带 agent_created: true 标记。
+    生产级 harness 常写入 ~/.workbuddy/skills/{title}/SKILL.md。
     """
-    skill_dir = Path.home() / ".workbuddy" / "skills" / title
-    skill_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        skill_md, requested = build_created_skill_md(
+            title, summary, read_when, content, permissions
+        )
+    except Exception as exc:
+        return f"拒绝创建技能: {exc}"
 
-    skill_md = f"""---
-title: {title}
-summary: {summary}
-read_when:
-  - {title}
-agent_created: true
----
+    if any(s["title"] == title for s in skill_index):
+        return f"技能 '{title}' 已存在。"
+    if title in pending_skills:
+        return f"技能 '{title}' 已在待审批队列中，未覆盖。"
 
-{content}
-"""
-    # 写入前先审计：P0 拒绝，P1 进待审批，只有 P2 直接写入
-    level, report = audit_skill(skill_md)
+    # 写入边界：先审计，再决定拒绝 / 待审批 / 直接入索引（无 mkdir / write_text）
+    level, report = audit_skill(skill_md, requested_permissions=requested)
     if level == "P0":
         return f"拒绝创建技能 '{title}': {report}"
     if level == "P1":
-        pending_skills[title] = PendingSkill(title, skill_md, report, time.time())
+        pending_skills[title] = PendingSkill(
+            title, skill_md, report, time.time(), requested
+        )
         return f"技能 '{title}' 待用户审批: {report}"
-    (skill_dir / "SKILL.md").write_text(skill_md)
 
-    # 加入索引
-    skill_index.append({
-        "title": title,
-        "summary": summary,
-        "read_when": [title],
-        "path": str(skill_dir / "SKILL.md"),
-        "loaded": False,
-    })
-
+    _index_created_skill(skill_md, requested)  # 更新 skill_index 与 SEED_SKILLS
     return f"技能 '{title}' 已创建。"
 ```
 
@@ -329,27 +309,30 @@ agent_created: true
 安装新技能前需要安全检查。WorkBuddy 有 P0/P1/P2 风险分级：
 
 ```python
-def audit_skill(skill_path: Path) -> tuple[str, str]:
-    """安全检查技能内容。
+def audit_skill(
+    skill_content: str,
+    previous_permissions=None,
+    *,
+    requested_permissions=None,
+) -> tuple[str, str]:
+    """安全检查技能内容（教学版：对 skill_content 做模式匹配）。
 
     Returns: (risk_level, report)
     risk_level: P0 (禁止) / P1 (需审批) / P2 (允许)
     """
-    content = skill_path.read_text()
-
     # P0: 硬禁止内容
     p0_patterns = ["rm -rf /", "sudo ", "eval(", "exec(", "os.system"]
     for pattern in p0_patterns:
-        if pattern in content:
+        if pattern in skill_content:
             return ("P0", f"禁止安装: 包含危险模式 '{pattern}'")
 
     # P1: 需要用户确认
     p1_patterns = ["curl ", "wget ", "npm install", "pip install", "git clone"]
     for pattern in p1_patterns:
-        if pattern in content:
+        if pattern in skill_content:
             return ("P1", f"需审批: 包含网络/安装操作 '{pattern}'")
 
-    # P2: 安全
+    # P2: 安全（权限合并/升级语义见 code.py，此处不展开）
     return ("P2", "安全: 无危险模式")
 ```
 
@@ -456,7 +439,7 @@ agent 需要这些工具时，先通过 `ToolSearch` 搜关键词找到工具名
 
 ## 三级 Skills 架构
 
-前面提到的两级存储（用户级 + 项目级）是简化模型。实际上 WorkBuddy 的 Skills 有三级：
+前面提到的两级存储（用户级 + 项目级）是简化模型。实际上 WorkBuddy 的 Skills 有三级（**生产形态**；本教学 REPL 当前不读这些目录）：
 
 ```
 ┌─────────────────────────────────────────────┐
@@ -510,6 +493,8 @@ my-skill/
 
 ### 两级存储
 
+（**生产形态**；本教学 REPL 当前从 `SEED_SKILLS` 建索引，不扫盘。）
+
 ```
 ~/.workbuddy/skills/              # 用户级 (个人, 跨项目)
   git-commit/SKILL.md
@@ -541,6 +526,8 @@ permissions:                 # Skill 请求的最小能力
 ```
 
 ### 加载流程
+
+（以下 `scanSkillDir` 为**生产形态**示意；本教学 REPL 当前不读这些目录，索引来自 `SEED_SKILLS`。）
 
 ```javascript
 // agent bridge 中的技能加载 (简化)
@@ -630,7 +617,7 @@ WorkBuddy 的一个设计原则：**完成多步骤任务后，把流程沉淀�
 `code.py` 实现了完整的 Skills 系统：
 
 1. **`parse_skill_md()`** — 解析 SKILL.md 的 YAML frontmatter 和正文
-2. **`build_skill_index()`** — 扫描用户级和项目级技能目录，构建索引
+2. **`build_skill_index()`** — 教学版从 `SEED_SKILLS` 建索引（生产级扫描用户级/项目级目录）
 3. **`match_skill()`** — 用户输入与触发词的关键词匹配
 4. **`load_skill()`** — 按需加载技能完整内容
 5. **`create_skill()`** — 创建新技能（agent_created 标记）

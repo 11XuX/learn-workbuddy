@@ -44,6 +44,8 @@ The harness needs extensibility without allowing a growing skill catalog to cons
 
 ## The Solution
 
+Two-level storage + on-demand loading (**production shape** below; this teaching REPL currently does not read these directories — see the teaching-boundary note under How It Works):
+
 ```
 Skill storage:
 
@@ -82,6 +84,8 @@ When the user enters a request:
 ```
 
 ## How It Works
+
+> **Teaching boundary (current):** A production Skills system scans user-level `~/.workbuddy/skills` and project-level `{workspace}/.workbuddy/skills` for `*/SKILL.md`. **This teaching chapter currently** builds the index only from the in-memory `SEED_SKILLS` dict; `create_skill` / `approve` only mutate the in-memory skill index and `pending_skills`, which disappear when the process exits. Directory diagrams and `scanSkillDir` sketches below are the **production shape** — this teaching REPL **currently** does not read those directories (that does not permanently rule out a future on-disk loader).
 
 ### Frontmatter Fields
 
@@ -123,7 +127,7 @@ permissions:
 Harness Base permissions ∩ currently approved Skill manifest
 ```
 
-### Index Building
+### Frontmatter Parsing
 
 ```python
 import yaml
@@ -154,42 +158,30 @@ def parse_skill_md(filepath: Path) -> dict | None:
     }
 ```
 
-### Trigger Matching
+### Index Building
 
 ```python
 def build_skill_index() -> list[dict]:
-    """Scan skill directories and build an index.
+    """Build the index from SEED_SKILLS (teaching version).
 
-    Extract only frontmatter fields (title, summary, read_when).
-    full content (content) not loaded — read on demand.
-
-    scan both user-level and project-level directories. project-level first (more specific).
+    Parse frontmatter only (title, summary, read_when); body stays in memory and is marked loaded on demand.
+    # Production: scan Path.home()/".workbuddy"/"skills" and WORKDIR/".workbuddy"/"skills" instead.
     """
     index = []
-    skill_dirs = [
-        Path.home() / ".workbuddy" / "skills",           # user-level
-        WORKDIR / ".workbuddy" / "skills",                # project-level
-    ]
-
-    for skill_dir in skill_dirs:
-        if not skill_dir.exists():
-            continue
-        for skill_md in skill_dir.glob("*/SKILL.md"):
-            skill = parse_skill_md(skill_md)
-            if skill:
-                # the index excludes content — it is too large
-                index.append({
-                    "title": skill["title"],
-                    "summary": skill["summary"],
-                    "read_when": skill["read_when"],
-                    "path": skill["path"],
-                    "loaded": False,  # mark whether full content is loaded
-                })
-
+    for name, content in SEED_SKILLS.items():
+        fm, body = parse_frontmatter(content)
+        index.append({
+            "title": fm.get("title", name),
+            "summary": fm.get("summary", ""),
+            "read_when": fm.get("read_when", []),
+            "path": f"(memory)/{name}/SKILL.md",
+            "content": body,
+            "loaded": False,
+        })
     return index
 ```
 
-### On-Demand Loading
+### Trigger Matching
 
 ```python
 def match_skill(user_input: str) -> str | None:
@@ -207,29 +199,26 @@ def match_skill(user_input: str) -> str | None:
     return None
 ```
 
-### The Skill Tool
+### On-Demand Loading
 
 ```python
-def load_skill(title: str) -> bool:
-    """Load a skill's full content into context.
+def load_skill(title: str) -> str:
+    """Load a skill's full content into context (teaching: body already in the index).
 
     1. Find the skill in the index
-    2. Read SKILL.md full content
-    3. Mark as loaded
-    4. Trigger system prompt reassembly (s15)
+    2. Mark as loaded (do not re-read from Path)
+    3. Return a status string with the body
     """
     for skill in skill_index:
-        if skill["title"] == title and not skill["loaded"]:
-            full = parse_skill_md(Path(skill["path"]))
+        if skill["title"] == title:
+            if skill["loaded"]:
+                return f"Skill '{title}' is already in context."
             skill["loaded"] = True
-            skill["content"] = full["content"]
-            # trigger prompt reassembly
-            reassemble_prompt()
-            return True
-    return False
+            return f"Skill '{title}' loaded. Content:\n{skill['content']}"
+    return f"Skill '{title}' not found. Available: {[s['title'] for s in skill_index]}"
 ```
 
-### Skill Creation
+### The Skill Tool
 
 ```python
 def skill_tool(skill: str) -> str:
@@ -242,74 +231,70 @@ def skill_tool(skill: str) -> str:
     return f"Skill not found '{skill}'.Available skills: {[s['title'] for s in skill_index]}"
 ```
 
-### Security Audit
+### Skill Creation
 
-After a task, the model can call the `SkillCreate` tool to propose saving the workflow as a new skill; the harness audits it before deciding whether to write:
+After a task, the model can call the `SkillCreate` tool to propose saving the workflow as a new skill; the harness audits it first, then rejects it, queues `pending_skills`, or indexes it in memory (teaching version does not write to disk):
 
 ```python
-def create_skill(title: str, summary: str, content: str) -> str:
-    """Create a new skill.
+def create_skill(title: str, summary: str, read_when: list[str],
+                 content: str, permissions=None) -> str:
+    """Create a new skill (teaching: memory index / pending_skills only; no disk write).
 
-    Production harnesses commonly use a SkillManage tool with the agent_created: true marker.
+    A production harness typically writes ~/.workbuddy/skills/{title}/SKILL.md.
     """
-    skill_dir = Path.home() / ".workbuddy" / "skills" / title
-    skill_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        skill_md, requested = build_created_skill_md(
+            title, summary, read_when, content, permissions
+        )
+    except Exception as exc:
+        return f"Rejected skill creation: {exc}"
 
-    skill_md = f"""---
-title: {title}
-summary: {summary}
-read_when:
-  - {title}
-agent_created: true
----
+    if any(s["title"] == title for s in skill_index):
+        return f"Skill '{title}' already exists."
+    if title in pending_skills:
+        return f"Skill '{title}' is already pending approval; not overwritten."
 
-{content}
-"""
-    # Audit before writing: P0 is rejected, P1 waits for approval, only P2 is written
-    level, report = audit_skill(skill_md)
+    # Write boundary: audit first, then reject / pending / index in memory (no mkdir / write_text)
+    level, report = audit_skill(skill_md, requested_permissions=requested)
     if level == "P0":
         return f"Rejected skill '{title}': {report}"
     if level == "P1":
-        pending_skills[title] = PendingSkill(title, skill_md, report, time.time())
+        pending_skills[title] = PendingSkill(
+            title, skill_md, report, time.time(), requested
+        )
         return f"Skill '{title}' is pending user approval: {report}"
-    (skill_dir / "SKILL.md").write_text(skill_md)
 
-    # Add to the index
-    skill_index.append({
-        "title": title,
-        "summary": summary,
-        "read_when": [title],
-        "path": str(skill_dir / "SKILL.md"),
-        "loaded": False,
-    })
-
+    _index_created_skill(skill_md, requested)  # updates skill_index and SEED_SKILLS
     return f"Skill '{title}' created."
 ```
 
-### Deferred Tool Loading
+### Security Audit
 
 ```python
-def audit_skill(skill_path: Path) -> tuple[str, str]:
-    """Check skill content for safety.
+def audit_skill(
+    skill_content: str,
+    previous_permissions=None,
+    *,
+    requested_permissions=None,
+) -> tuple[str, str]:
+    """Check skill content for safety (teaching: pattern-match on skill_content).
 
     Returns: (risk_level, report)
     risk_level: P0 (forbidden) / P1 (approval required) / P2 (allowed)
     """
-    content = skill_path.read_text()
-
     # P0: hard-blocked content
     p0_patterns = ["rm -rf /", "sudo ", "eval(", "exec(", "os.system"]
     for pattern in p0_patterns:
-        if pattern in content:
+        if pattern in skill_content:
             return ("P0", f"forbidden installation: contains dangerous pattern '{pattern}'")
 
     # P1: requires user confirmation
     p1_patterns = ["curl ", "wget ", "npm install", "pip install", "git clone"]
     for pattern in p1_patterns:
-        if pattern in content:
+        if pattern in skill_content:
             return ("P1", f"approval required: contains network/install operations '{pattern}'")
 
-    # P2: Safe
+    # P2: safe (permission merge / escalation lives in code.py; not expanded here)
     return ("P2", "Safe: no dangerous patterns")
 ```
 
@@ -387,6 +372,8 @@ Deferred tools (loaded only when used):
 
 ## Skill Directory Layout
 
+(**Production shape**; this teaching REPL currently does not read these directories.)
+
 ```
 ┌─────────────────────────────────────────────┐
 │            Skill storage hierarchy                     │
@@ -433,6 +420,8 @@ This comparison maps skill discovery, frontmatter catalogs, deferred loading, an
 
 ### Frontmatter Fields
 
+(**Production shape**; this teaching REPL currently indexes `SEED_SKILLS` and does not scan disk.)
+
 ```
 ~/.workbuddy/skills/              # user-level (personal, shared across projects)
   git-commit/SKILL.md
@@ -462,6 +451,8 @@ permissions:                 # minimum capabilities requested by the Skill
 ```
 
 ### Security Audit
+
+(The `scanSkillDir` calls below are the **production shape**; this teaching REPL currently does not read those directories — the index comes from `SEED_SKILLS`.)
 
 ```javascript
 // skill loading in the agent bridge (simplified)
