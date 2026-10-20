@@ -69,3 +69,42 @@ def test_agent_loop_surfaces_error_for_non_list_tool_names() -> None:
     assert result["turns"] == 2
     assert len(captured) == 1
     assert captured[0].startswith("Error")
+
+
+def test_non_list_fields_rejected_before_any_registry_loading() -> None:
+    s03 = load_s03()
+    invalid_values = ("image_gen", "", 0, False, {}, {"image_gen": True})
+
+    for field in ("tool_names", "queries"):
+        for value in invalid_values:
+            reg = s03.build_registry()
+            before = reg.get_loaded_names()
+            if field == "tool_names":
+                params = {"tool_names": value, "queries": ["image_gen"]}
+                expected = (
+                    "Error: tool_names must be an array of tool name strings."
+                )
+            else:
+                params = {"tool_names": ["image_gen"], "queries": value}
+                expected = "Error: queries must be an array of query strings."
+
+            out = s03.handle_tool_search(reg, **params)
+            assert out == expected, (field, value, out)
+            assert reg.get_loaded_names() == before, (field, value)
+
+
+def test_none_keeps_valid_list_loading_and_search_available() -> None:
+    s03 = load_s03()
+    for params in (
+        {"tool_names": ["image_gen"], "queries": None},
+        {"tool_names": None, "queries": ["image_gen"]},
+    ):
+        reg = s03.build_registry()
+        out = s03.handle_tool_search(reg, **params)
+        assert isinstance(out, str)
+        assert not out.startswith("Error:")
+        assert "image_gen" in reg.get_loaded_names()
+
+    assert s03.handle_tool_search(
+        s03.build_registry(), tool_names=None, queries=None
+    ) == "Error: provide tool_names or queries."
