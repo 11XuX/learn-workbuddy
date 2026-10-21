@@ -1,25 +1,25 @@
-"""s09: incomplete message / tool events must fail closed, not KeyError on replay.
+"""s09: incomplete persisted message/tool events must fail closed, not KeyError.
 
-Contract (s09 README §6 种事件类型 + §损坏处理):
-  - ``message`` requires ``role`` + ``content``
-  - ``function_call`` requires ``callId`` / ``name`` / ``arguments``
-  - ``function_call_result`` requires ``callId`` / ``output``
-  - Complete persisted records that break the evidence chain must raise
-    ``TranscriptCorruptionError`` (fail closed), not crash recovery with
-    a bare ``KeyError``.
+Contract anchors (s09 README §损坏处理 / §为什么选 JSONL + TranscriptCorruptionError):
+  - Complete records that break the evidence chain must raise
+    ``TranscriptCorruptionError`` (fail closed), not escape as bare ``KeyError``.
+  - README event examples: ``message`` carries ``role``+``content``;
+    ``function_call`` carries ``name``/``arguments``/``callId``.
+  - ``_event_to_message`` folds those fields with direct subscript; missing
+    keys today crash ``replay`` / ``recover``.
 
-Today ``append`` only rejects reserved envelope keys. A complete line missing
-``role`` (or tool fields) is written, then ``replay`` / ``recover`` hits
-``_event_to_message``'s ``event["role"]`` / ``event["arguments"]`` and raises
-``KeyError``, so crash recovery itself crashes.
+Scope (narrowed after Critic round-1): this card targets the *fold/recover*
+path for already-persisted complete JSONL lines. ``append`` type-field
+validation is optional defense-in-depth, not required acceptance.
 
-Real entry: ``JSONLTranscript.append`` (harness write path used by demo /
-interactive) and ``replay`` / ``recover`` on the resulting file.
+Real entry: a complete JSONL line already on disk (buggy writer / hand edit /
+prior ``append``), then ``recover`` / ``replay``.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -42,30 +42,36 @@ def s09():
     sys.modules.pop(name, None)
 
 
-def test_message_missing_role_fails_closed_not_keyerror(s09, tmp_path: Path) -> None:
+def _persist(path: Path, payload: dict) -> None:
+    """Write one complete envelope line (simulates already-on-disk evidence)."""
+    session_id = path.stem
+    envelope = {
+        "schema_version": 1,
+        "sequence": 1,
+        "session_id": session_id,
+        "event_id": f"transcript:{session_id}:1",
+        "recorded_at": "2026-01-01T00:00:00+00:00",
+        **payload,
+    }
+    path.write_text(
+        json.dumps(envelope, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def test_persisted_message_missing_role_recover_not_keyerror(s09, tmp_path: Path) -> None:
     path = tmp_path / "session.jsonl"
-    transcript = s09.JSONLTranscript(path)
-    # append may validate or persist; either way replay/recover must not KeyError.
-    try:
-        transcript.append({"type": "message", "content": "hi"})
-    except s09.TranscriptValidationError:
-        return
+    _persist(path, {"type": "message", "content": "hi"})  # no role
     before = path.read_bytes()
     with pytest.raises(s09.TranscriptCorruptionError):
-        transcript.recover()
+        s09.JSONLTranscript(path).recover()
     assert path.read_bytes() == before
 
 
-def test_function_call_missing_arguments_fails_closed_not_keyerror(
+def test_persisted_function_call_missing_arguments_replay_not_keyerror(
     s09, tmp_path: Path
 ) -> None:
     path = tmp_path / "session.jsonl"
-    transcript = s09.JSONLTranscript(path)
-    try:
-        transcript.append(
-            {"type": "function_call", "name": "read_file", "callId": "c1"}
-        )
-    except s09.TranscriptValidationError:
-        return
+    _persist(path, {"type": "function_call", "name": "read_file", "callId": "c1"})
     with pytest.raises(s09.TranscriptCorruptionError):
-        transcript.replay()
+        s09.JSONLTranscript(path).replay()
