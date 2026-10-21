@@ -397,30 +397,34 @@ class JSONLTranscript:
         - reasoning, file-history-snapshot, ai-title -> None (metadata)
         """
         etype = event.get("type")
+        try:
+            if etype == TYPE_MESSAGE:
+                return {"role": event["role"], "content": event["content"]}
 
-        if etype == TYPE_MESSAGE:
-            return {"role": event["role"], "content": event["content"]}
+            if etype == TYPE_FUNCTION_CALL:
+                return {
+                    "role": "assistant",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": event["callId"],
+                        "name": event["name"],
+                        "input": event["arguments"],
+                    }],
+                }
 
-        if etype == TYPE_FUNCTION_CALL:
-            return {
-                "role": "assistant",
-                "content": [{
-                    "type": "tool_use",
-                    "id": event["callId"],
-                    "name": event["name"],
-                    "input": event["arguments"],
-                }],
-            }
-
-        if etype == TYPE_FUNCTION_CALL_RESULT:
-            return {
-                "role": "user",
-                "content": [{
-                    "type": "tool_result",
-                    "tool_use_id": event["callId"],
-                    "content": event["output"],
-                }],
-            }
+            if etype == TYPE_FUNCTION_CALL_RESULT:
+                return {
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": event["callId"],
+                        "content": event["output"],
+                    }],
+                }
+        except KeyError as exc:
+            raise TranscriptCorruptionError(
+                f"incomplete {etype} event: missing required field {exc.args[0]!r}"
+            ) from exc
 
         # reasoning, file-history-snapshot, ai-title are metadata
         return None
