@@ -169,6 +169,10 @@ class MemoryCandidate:
     def __post_init__(self) -> None:
         if not self.memory_id.strip():
             raise ValueError("memory candidate ID must not be empty")
+        if any(ch in self.memory_id for ch in ("[", "]", "\n")):
+            raise ValueError(
+                "memory candidate ID must not contain '[', ']', or newline"
+            )
         if not self.content.strip():
             raise ValueError("memory candidate content must not be empty")
 
