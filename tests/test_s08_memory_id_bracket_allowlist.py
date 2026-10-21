@@ -72,3 +72,48 @@ def test_select_keep_allowlisted_id_when_model_echoes_bracket_form(
         s08, "mock_llm", lambda _m, _p, _t="": "[mem_auth]\n[unknown]"
     )
     assert selector.select(request, token_override=100).selected_ids == ("mem_auth",)
+
+
+def test_reject_unsafe_id_variants_and_round_trip_safe_batch(
+    s08, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Adversarial: leading/trailing/mid brackets+newline rejected; safe batch allowlisted."""
+    bad_ids = (
+        "[leading",
+        "trailing]",
+        "pre[mid",
+        "pre\nsuffix",
+        "\nleading",
+        "trailing\n",
+        "prefix[\n]suffix",
+    )
+    for bad_id in bad_ids:
+        with pytest.raises(ValueError, match="memory candidate ID"):
+            s08.MemoryCandidate(bad_id, "Candidate content.")
+
+    safe_ids = (
+        "safe-prefix",
+        "safe.suffix:42/part",
+        "記憶_登入",
+        "safe inner space",
+        " safe-padded ",
+    )
+    candidates = tuple(
+        s08.MemoryCandidate(memory_id, "Candidate content.")
+        for memory_id in safe_ids
+    )
+    request = s08.MemorySelectionRequest(
+        query="login",
+        candidates=candidates,
+        limit=len(candidates),
+    )
+    echo = "\n".join(f"[{memory_id}]" for memory_id in safe_ids)
+    monkeypatch.setattr(
+        s08, "mock_llm", lambda _m, _p, _t="": echo
+    )
+
+    selector = s08.MemorySelectorRouter(s08.ModelRouter())
+    assert (
+        selector.select(request, token_override=100).selected_ids
+        == safe_ids
+    )
