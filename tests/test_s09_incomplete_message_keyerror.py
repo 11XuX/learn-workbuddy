@@ -75,3 +75,37 @@ def test_persisted_function_call_missing_arguments_replay_not_keyerror(
     _persist(path, {"type": "function_call", "name": "read_file", "callId": "c1"})
     with pytest.raises(s09.TranscriptCorruptionError):
         s09.JSONLTranscript(path).replay()
+
+
+@pytest.mark.parametrize(
+    ("entrypoint", "payload"),
+    [
+        ("replay", {"type": "message", "content": "missing role"}),
+        (
+            "recover",
+            {
+                "type": "function_call",
+                "name": "read_file",
+                "callId": "c1",
+                # 故意缺 arguments
+            },
+        ),
+    ],
+)
+def test_persisted_missing_fields_cross_entrypoints_fail_closed(
+    s09, tmp_path: Path, entrypoint: str, payload: dict
+) -> None:
+    """Verifier adversarial: cross entrypoints + byte-stable fail-closed.
+
+    Hunter covers message→recover and function_call→replay. This flips the
+    pairs so a fix that only patches one path, or silently .get/None-defaults,
+    still fails. Disk bytes must stay unchanged (no rewrite-on-error).
+    """
+    path = tmp_path / "cross_entrypoint.jsonl"
+    _persist(path, payload)
+    before = path.read_bytes()
+
+    with pytest.raises(s09.TranscriptCorruptionError):
+        getattr(s09.JSONLTranscript(path), entrypoint)()
+
+    assert path.read_bytes() == before
