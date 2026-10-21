@@ -286,7 +286,7 @@ class JSONLTranscript:
         Here we read all lines and slice — same concept, simpler code.
         """
         events = self._read_all_events()
-        recent = events[-max_items:]  # Take last N events
+        recent = events[-max_items:] if max_items > 0 else []  # Take last N events
 
         messages = []
         for event in recent:
@@ -298,7 +298,7 @@ class JSONLTranscript:
     def replay_state(self, max_items: int = SESSION_MAX_ITEMS) -> ReplayState:
         """Fold evidence into disposable state for a replacement runtime."""
         events = self._read_all_events()
-        recent = events[-max_items:]
+        recent = events[-max_items:] if max_items > 0 else []
         messages = [
             message
             for event in recent
