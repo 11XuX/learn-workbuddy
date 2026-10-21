@@ -1,18 +1,12 @@
-"""s08: memory candidate IDs must round-trip through the [id] allowlist wire format.
+"""s08: memory candidate IDs must round-trip through the [id] allowlist wire.
 
-Contract (s08 README Memory Selector boundary + MemorySelectorRouter):
-  - candidates supply stable IDs; selector returns allowlisted IDs only
-  - ``_build_prompt`` encodes each candidate as ``[memory_id] content``
-  - ``_allowlisted_ids`` recovers IDs with ``re.findall(r"\\[([^\\]\\n]+)\\]", ...)``
+Contract: README Memory Selector returns stable IDs from the candidate set;
+``_build_prompt`` encodes ``[memory_id] content``; ``_allowlisted_ids`` uses
+``re.findall(r"\\[([^\\]\\n]+)\\]", ...)``. IDs with ``]``/``[``/``\\n`` cannot
+round-trip. Today only empty IDs are rejected, so ``proj]auth`` constructs,
+mangles the prompt, and even echo ``[proj]auth]`` yields ``selected_ids=()``.
 
-IDs that contain ``]``, ``[``, or a newline cannot be encoded/decoded by that
-bracket protocol. Today ``MemoryCandidate`` only rejects empty/whitespace IDs,
-so a retrieval-supplied ID like ``proj]auth`` is accepted, appears mangled in
-the prompt as ``[proj]auth] ...``, and even a model that echoes ``[proj]auth]``
-yields ``selected_ids=()`` — silent drop of a valid candidate.
-
-Real entry: ``MemorySelectionRequest`` / ``MemorySelectorRouter.select``
-(same surface as ``tests/test_model_routing_contracts.py``).
+Real entry: ``MemorySelectionRequest`` / ``MemorySelectorRouter.select``.
 """
 
 from __future__ import annotations
@@ -41,18 +35,31 @@ def s08():
     sys.modules.pop(name, None)
 
 
-@pytest.mark.parametrize("bad_id", ["proj]auth", "a[b]", "mem\nid"])
-def test_memory_candidate_rejects_ids_unsafe_for_bracket_wire(s08, bad_id: str) -> None:
-    with pytest.raises(ValueError, match="memory candidate ID"):
-        s08.MemoryCandidate(bad_id, "Login fix in auth")
+@pytest.mark.parametrize(
+    "bad_id,echo",
+    [("proj]auth", "[proj]auth]"), ("a[b]", "[a[b]]"), ("mem\nid", "[mem\nid]")],
+)
+def test_memory_candidate_rejects_ids_unsafe_for_bracket_wire(
+    s08, bad_id: str, echo: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reject at construction. On unfixed main, prove silent-drop then fail."""
+    try:
+        cand = s08.MemoryCandidate(bad_id, "Login fix in auth")
+    except ValueError as exc:
+        assert "memory candidate ID" in str(exc)
+        return
+    selector = s08.MemorySelectorRouter(s08.ModelRouter())
+    req = s08.MemorySelectionRequest(query="login", candidates=(cand,), limit=1)
+    monkeypatch.setattr(s08, "mock_llm", lambda _m, _p, _t="": echo)
+    assert selector.select(req, token_override=100).selected_ids == ()
+    pytest.fail("DID NOT RAISE ValueError")
 
 
 def test_select_keep_allowlisted_id_when_model_echoes_bracket_form(
     s08, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Safe IDs still round-trip; documents the wire format under test."""
-    router = s08.ModelRouter()
-    selector = s08.MemorySelectorRouter(router)
+    """Safe IDs round-trip via select: model echo [id] → allowlisted selected_ids."""
+    selector = s08.MemorySelectorRouter(s08.ModelRouter())
     request = s08.MemorySelectionRequest(
         query="login",
         candidates=(
@@ -64,5 +71,4 @@ def test_select_keep_allowlisted_id_when_model_echoes_bracket_form(
     monkeypatch.setattr(
         s08, "mock_llm", lambda _m, _p, _t="": "[mem_auth]\n[unknown]"
     )
-    result = selector.select(request, token_override=100)
-    assert result.selected_ids == ("mem_auth",)
+    assert selector.select(request, token_override=100).selected_ids == ("mem_auth",)
