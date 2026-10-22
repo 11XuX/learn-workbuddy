@@ -305,7 +305,7 @@ WorkBuddy 的自动化 prompt 不能依赖用户实时交互。如果 prompt 中
 2. **自动化 CRUD** — 创建、列表、暂停/恢复、软删除
 3. **调度器循环** — 检查到期任务, 执行, 更新状态
 4. **运行历史** — 记录每次执行的结果
-5. **交互式 REPL** — 用 `/create`、`/list`、`/run`、`/delete` 管理自动化
+5. **交互式 REPL** — 用 `/create`、`/list`、`/run`、`/pause`、`/resume`、`/delete`、`/view` 管理自动化
 
 运行后, 你可以创建自动化任务, 手动触发调度器检查, 查看运行历史。
 
@@ -322,8 +322,11 @@ python s22_automation_scheduler/code.py
 1. `/create` — 创建一个新的自动化任务
 2. `/list` — 列出所有自动化
 3. `/run` — 手动触发调度器检查（模拟定时触发）
-4. `/delete <id>` — 软删除一个自动化
-5. `/history <id>` — 查看某个自动化的运行历史
+4. `/pause <id>` — 暂停一个自动化
+5. `/resume <id>` — 恢复一个已暂停的自动化
+6. `/delete <id>` — 软删除一个自动化
+7. `/history <id>` — 查看某个自动化的运行历史
+8. `/view <id>` — 查看某个自动化的详情
 
 ---
 
