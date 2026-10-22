@@ -67,9 +67,20 @@ The harness needs time-based invocation without turning scheduling into an unbou
 └──────────────────────────────────────────────────┘
 ```
 
+| Concept | Meaning |
+|------|------|
+| `schedule_type` | `"recurring"` or `"once"` |
+| `rrule` | RFC 5545 rule string, such as `FREQ=DAILY;INTERVAL=1` |
+| `scheduled_at` | ISO 8601 time used only by `once` schedules |
+| `status` | `ACTIVE`, `PAUSED`, or `deleted` (soft delete) |
+| `runtime_state` | Stores `last_run`, `next_run`, and `last_status` |
+| `automation_runs` | History of each execution |
+
 ## How It Works
 
-### 2. The Tick Loop
+### 1. RRULE — RFC 5545 Recurrence Rules
+
+RRULE is the recurrence rule format from the iCalendar standard. WorkBuddy supports five frequencies:
 
 ```
 FREQ=DAILY;INTERVAL=1       → once a day
@@ -79,6 +90,8 @@ FREQ=WEEKLY;BYDAY=MO,WE,FR  → every Monday, Wednesday, and Friday
 FREQ=MONTHLY;BYDAY=1MO      → the first Monday of every month
 FREQ=YEARLY                 → once a year
 ```
+
+Parse the RRULE and calculate the next run time:
 
 ```python
 from datetime import datetime, timedelta
@@ -102,7 +115,7 @@ def next_run_from_rrule(rrule: str, after: datetime) -> datetime:
     return after + timedelta(days=1)
 ```
 
-### 3. Automatic Invocation
+### 2. The Scheduler Loop
 
 ```python
 def scheduler_tick():
@@ -123,7 +136,9 @@ def scheduler_tick():
         update_runtime_state(auto)
 ```
 
-### 4. Soft Delete
+### 3. Automation Execution — Prompt Isolation
+
+An automation prompt is self-contained: the user may not be present to answer questions, so the prompt must carry all of its context:
 
 ```python
 def execute_automation(auto):
@@ -155,7 +170,7 @@ def execute_automation(auto):
         )
 ```
 
-### 5. Missed Runs
+### 4. Soft Delete — Never Really Delete
 
 ```python
 def delete_automation(auto_id):
@@ -172,9 +187,9 @@ def delete_automation(auto_id):
     # the row disappears from list/view, but remains recoverable in the database
 ```
 
-### WorkBuddy Architecture Comparison
+This is a hard rule in WorkBuddy. The `delete` mode of the `automation_update` tool performs exactly this operation. Even if the user says "delete this automation", the system never runs `DELETE FROM`; it marks the row as `deleted` instead.
 
-This comparison maps RRULE scheduling, isolated prompts, persistence, and soft deletion to the corresponding WorkBuddy-style harness boundary.
+### 5. Two Schedule Types
 
 ```python
 def calculate_next_run(auto) -> str | None:
@@ -197,7 +212,9 @@ def calculate_next_run(auto) -> str | None:
 
 This comparison maps RRULE scheduling, isolated prompts, persistence, and soft deletion to the corresponding WorkBuddy-style harness boundary.
 
-### Scheduler in the Sidecar
+### The automation_update Tool
+
+WorkBuddy's `automation_update` tool supports 5 modes: `list`, `view`, `create`, `update`, and `delete`. The parameters for each mode are defined in the tool schema:
 
 ```javascript
 // core fields in create mode
@@ -214,7 +231,9 @@ This comparison maps RRULE scheduling, isolated prompts, persistence, and soft d
 }
 ```
 
-### Soft Delete in Practice
+### The Scheduler Runs in the Sidecar
+
+The Sidecar process of a WorkBuddy-style desktop agent stays resident and runs the scheduler loop inside it:
 
 ```javascript
 // simplified scheduler loop
@@ -234,7 +253,7 @@ setInterval(async () => {
 }, 60_000);  // check once per minute
 ```
 
-### Prompt Persistence
+### Soft Delete Implementation
 
 ```javascript
 // automation_update mode="delete"
@@ -246,6 +265,8 @@ db.prepare(
 ).run(new Date().toISOString(), id);
 ```
 
+After deletion, the `list` and `view` modes filter the row out automatically:
+
 ```javascript
 // list mode
 db.prepare("SELECT * FROM automations WHERE status != 'deleted'").all();
@@ -253,11 +274,21 @@ db.prepare("SELECT * FROM automations WHERE status != 'deleted'").all();
 db.prepare("SELECT * FROM automations WHERE id=? AND status != 'deleted'").get(id);
 ```
 
-### Code Walkthrough
+### Prompt Self-Sufficiency
+
+WorkBuddy automation prompts cannot rely on live interaction with the user. If a prompt contains a question such as "What do you think?", the agent gets stuck in the automation session. So the system prompt injects: "You are running an automation task. The user may not be present. Complete it on your own and do not ask questions."
 
 ## Code Walkthrough
 
-Trace schedule calculation, persisted definitions, isolated execution, run history, and soft deletion through one tick.
+`code.py` simulates the WorkBuddy automation scheduler:
+
+1. **RRULE parsing** — a simplified RFC 5545 parser that supports 5 frequencies
+2. **Automation CRUD** — create, list, pause/resume, soft delete
+3. **Scheduler loop** — check due tasks, execute them, update state
+4. **Run history** — record the result of each execution
+5. **Interactive REPL** — manage automations with `/create`, `/list`, `/run`, `/pause`, `/resume`, `/delete`, `/view`
+
+After it starts, you can create automation tasks, trigger a scheduler check by hand, and view run history.
 
 ## Run
 
@@ -265,24 +296,28 @@ Trace schedule calculation, persisted definitions, isolated execution, run histo
 python s22_automation_scheduler/code.py
 ```
 
+Try these actions:
+
+1. `/create` — create a new automation task
+2. `/list` — list all automations
+3. `/run` — trigger a scheduler check by hand (simulates a timed trigger)
+4. `/pause <id>` — pause an automation
+5. `/resume <id>` — resume a paused automation
+6. `/delete <id>` — soft-delete an automation
+7. `/history <id>` — view the run history of an automation
+8. `/view <id>` — view the details of an automation
+
 ## Exercises
 
-Use these exercises to change one part of RRULE scheduling, isolated prompts, persistence, and soft deletion at a time and explain the resulting contract.
+1. Add `BYDAY` support so that `FREQ=WEEKLY;BYDAY=MO,WE,FR` correctly calculates the next matching weekday
+2. Implement `PAUSE`/`RESUME` commands: set `next_run` to `NULL` when paused and recalculate it on resume
+3. Add `valid_from` and `valid_until` checks so an automation only runs within its validity window
 
 ## Next Lesson
 
-- Once and recurring jobs are durable records. The scheduler calculates due work, prevents duplicate runs, and records history.
+Sessions are persisted and automations run on schedule. But who records every step the agent takes — which commands it ran, which files it changed? If something goes wrong, how do you trace it?
 
-**Reference table**
-
-| Concept | Meaning |
-|------|------|
-| `schedule_type` | `"recurring"` or `"once"` |
-| `rrule` | RFC 5545 rule string, such as `FREQ=DAILY;INTERVAL=1` |
-| `scheduled_at` | ISO 8601 time used only by `once` schedules |
-| `status` | `ACTIVE`, `PAUSED`, or `deleted` (soft delete) |
-| `runtime_state` | Stores `last_run`, `next_run`, and `last_status` |
-| `automation_runs` | History of each execution |
+s23 Audit & Sandbox → a SHA256 hash-chained audit log plus a command sandbox, so every step leaves a tamper-proof trace.
 
 The original Chinese README remains the primary-language reference. This English companion keeps the same code, diagrams, local paths, and chapter structure so readers can switch languages without losing runnable details.
 
