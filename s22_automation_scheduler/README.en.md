@@ -187,6 +187,8 @@ def delete_automation(auto_id):
     # the row disappears from list/view, but remains recoverable in the database
 ```
 
+This is a hard rule in WorkBuddy. The `delete` mode of the `automation_update` tool performs exactly this operation. Even if the user says "delete this automation", the system never runs `DELETE FROM`; it marks the row as `deleted` instead.
+
 ### 5. Two Schedule Types
 
 ```python
@@ -211,6 +213,8 @@ def calculate_next_run(auto) -> str | None:
 This comparison maps RRULE scheduling, isolated prompts, persistence, and soft deletion to the corresponding WorkBuddy-style harness boundary.
 
 ### The automation_update Tool
+
+WorkBuddy's `automation_update` tool supports 5 modes: `list`, `view`, `create`, `update`, and `delete`. The parameters for each mode are defined in the tool schema:
 
 ```javascript
 // core fields in create mode
