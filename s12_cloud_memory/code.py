@@ -1079,7 +1079,10 @@ def recall_history(query: str, limit: int = 5) -> str:
     """Tool adapter returning structured query, hit, source, and score fields."""
 
     _store, recall, _system = default_runtime()
-    result = recall.recall(query, limit=int(limit))
+    try:
+        result = recall.recall(query, limit=int(limit))
+    except RemoteMemoryValidationError as exc:
+        return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
     return json.dumps(result.to_dict(), ensure_ascii=False, indent=2)
 
 
