@@ -299,6 +299,8 @@ def estimate_tokens(messages: list) -> int:
 
 工具返回大块输出（比如读了一个 5000 行的文件）是上下文膨胀的主要原因。第一层策略：截断超大工具结果。
 
+`read_file` 在工具层最多返回 20000 字符；超过时会切到 19900 字符，并在末尾注明原始长度，让模型知道看到的不是全文。
+
 ```python
 MAX_TOOL_RESULT_TOKENS = 5000
 
