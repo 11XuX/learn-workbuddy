@@ -191,3 +191,57 @@ def test_cli_offline_demo_writes_manifest(evolution, tmp_path: Path) -> None:
     assert manifest["evaluation_passed"] is True
     assert Path(manifest["promoted_skill_path"]).exists()
     assert "Held-out evaluation passed: True" in result.stdout
+
+
+def test_readme_validation_glob_covers_exactly_all_self_evolving_tests():
+    import re
+    import shlex
+
+    tests_dir = ROOT / "tests"
+    adversarial = {
+        f"test_self_evolving_skills_adversarial_r{i}.py"
+        for i in range(1, 5)
+    }
+    expected = adversarial | {
+        "test_self_evolving_skills.py",
+        "test_self_evolving_skills_cli.py",
+        "test_self_evolving_skills_rollback.py",
+    }
+
+    assert not list(
+        tests_dir.glob("test_examples_skill_rollback_adversarial*")
+    )
+    assert all((tests_dir / name).is_file() for name in adversarial)
+
+    readme = (
+        ROOT / "examples/self_evolving_skills/README.md"
+    ).read_text(encoding="utf-8")
+    section = re.search(
+        r"^## 验证[ \t]*\n(.*?)(?=^##[ \t]|\Z)",
+        readme,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert section is not None
+    block = re.search(
+        r"^```bash[ \t]*\n(.*?)^```[ \t]*$",
+        section.group(1),
+        re.MULTILINE | re.DOTALL,
+    )
+    assert block is not None
+
+    commands = [
+        line.strip()
+        for line in block.group(1).splitlines()
+        if line.strip()
+    ]
+    assert len(commands) == 1
+    argv = shlex.split(commands[0])
+    assert argv == [
+        "python3", "-m", "pytest", "-q",
+        "tests/test_self_evolving_skills*.py",
+    ]
+
+    matched = list(ROOT.glob(argv[-1]))
+    assert all(path.is_file() for path in matched)
+    assert {path.name for path in matched} == expected
+    assert len(matched) == 7
