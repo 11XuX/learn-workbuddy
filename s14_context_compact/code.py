@@ -1524,7 +1524,11 @@ def run_read(path: str) -> str:
         p = (WORKDIR / path).resolve()
         if not p.is_relative_to(WORKDIR):
             return f"Error: path escapes workspace"
-        return p.read_text()[:20000]  # Allow large reads to test truncation
+        text = p.read_text()
+        if len(text) <= 20000:
+            return text
+        # Note stays inside 20000 chars so Layer 1 never cuts it off
+        return text[:19900] + f"\n[read_file 已截断: 原始 {len(text)} 字符, 保留 19900 字符]"
     except Exception as e:
         return f"Error: {e}"
 

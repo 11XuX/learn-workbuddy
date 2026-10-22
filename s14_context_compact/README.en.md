@@ -235,6 +235,8 @@ def estimate_tokens(messages: list) -> int:
 
 ### Layer 1: Trim Tool Results
 
+`read_file` returns at most 20,000 characters at the tool layer; longer files are cut to 19,900 characters with a note giving the original length, so the model knows it is not seeing the whole file.
+
 ```python
 MAX_TOOL_RESULT_TOKENS = 5000
 
