@@ -65,3 +65,92 @@ def test_store_corruption_still_raises(s12, monkeypatch):
         fh.write(b"{not json\n")
     with pytest.raises(s12.RemoteMemoryCorruptionError):
         s12.dispatch_tool("recall_history", {"query": "python deploy", "limit": 5})
+
+
+def test_recall_limit_matrix_and_success_contract(s12):
+    before = s12.DEFAULT_STORE.path.read_bytes()
+    invalid_limits = (
+        -100, -1, 0, 11, 100, 10**100,
+        True, False, 1.0, 5.9, 10.9,
+        "5", "11", None, [], {},
+    )
+    for limit in invalid_limits:
+        out = json.loads(s12.dispatch_tool(
+            "recall_history", {"query": "python deploy", "limit": limit}
+        ))
+        assert out.get("ok") is False, repr(limit)
+        assert out.get("error"), repr(limit)
+        assert s12.DEFAULT_STORE.path.read_bytes() == before
+
+    for query in ("？？？", "!!!...", "", " \t\n"):
+        out = json.loads(s12.dispatch_tool(
+            "recall_history", {"query": query}
+        ))
+        assert out.get("ok") is False, repr(query)
+        assert out.get("error"), repr(query)
+        assert s12.DEFAULT_STORE.path.read_bytes() == before
+
+    for limit in range(1, 11):
+        out = json.loads(s12.dispatch_tool(
+            "recall_history", {"query": "python deploy", "limit": limit}
+        ))
+        assert "ok" not in out
+        assert out["query"]["limit"] == limit
+        assert [hit["memory_id"] for hit in out["hits"]] == ["conv-1"]
+        assert s12.DEFAULT_STORE.path.read_bytes() == before
+
+
+def test_agent_loop_pairs_mixed_recall_calls(s12, monkeypatch):
+    from types import SimpleNamespace
+
+    arguments = [
+        {"query": "python deploy", "limit": 0},
+        {"query": "python deploy", "limit": 11},
+        {"query": "？？？"},
+        {"query": "python deploy", "limit": True},
+        {"query": "python deploy", "limit": 1.0},
+        {"query": "python deploy", "limit": "5"},
+        {"query": "python deploy", "limit": 1},
+    ]
+    blocks = [
+        SimpleNamespace(
+            type="tool_use", id=f"recall-{index}",
+            name="recall_history", input=args,
+        )
+        for index, args in enumerate(arguments)
+    ]
+    responses = iter([
+        SimpleNamespace(content=blocks, stop_reason="tool_use"),
+        SimpleNamespace(
+            content=[SimpleNamespace(type="text", text="done")],
+            stop_reason="end_turn",
+        ),
+    ])
+
+    def create(**kwargs):
+        return next(responses)
+
+    client = SimpleNamespace(messages=SimpleNamespace(create=create))
+    monkeypatch.setattr(
+        s12, "runtime_client", lambda: (client, "offline-test-model")
+    )
+    before = s12.DEFAULT_STORE.path.read_bytes()
+    messages = [{"role": "user", "content": "search history"}]
+    s12.agent_loop(messages)
+
+    assert [message["role"] for message in messages] == [
+        "user", "assistant", "user", "assistant"
+    ]
+    results = messages[2]["content"]
+    assert [result["tool_use_id"] for result in results] == [
+        block.id for block in blocks
+    ]
+    assert all(result["type"] == "tool_result" for result in results)
+    for result in results[:-1]:
+        out = json.loads(result["content"])
+        assert out.get("ok") is False
+        assert out.get("error")
+    success = json.loads(results[-1]["content"])
+    assert "ok" not in success
+    assert [hit["memory_id"] for hit in success["hits"]] == ["conv-1"]
+    assert s12.DEFAULT_STORE.path.read_bytes() == before
