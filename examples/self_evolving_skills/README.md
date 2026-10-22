@@ -152,7 +152,7 @@ python3 examples/self_evolving_skills/code.py \
 ## 验证
 
 ```bash
-python3 -m pytest -q tests/test_self_evolving_skills.py tests/test_self_evolving_skills_rollback.py
+python3 -m pytest -q tests/test_self_evolving_skills*.py
 ```
 
 测试覆盖候选态停止、失败轨迹隔离、held-out 评测、显式审批、版本幂等、敏感轨迹拒绝，以及回滚、前滚、篡改拒绝和 store 搬迁。
