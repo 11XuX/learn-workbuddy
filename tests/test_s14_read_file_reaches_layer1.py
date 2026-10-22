@@ -71,3 +71,62 @@ def test_large_read_stays_within_per_result_budget(s14, tmp_path, monkeypatch):
 @pytest.mark.parametrize("size", [100, 20000])
 def test_reads_within_budget_are_untouched(s14, tmp_path, monkeypatch, size):
     assert _seen(s14, tmp_path, monkeypatch, size, layer1=True) == "x" * size
+
+
+@pytest.mark.parametrize("size", [19999, 20000, 20001, 30000, 10**6, 10**7])
+def test_s14_read_file_adversarial_size_matrix(
+    s14, tmp_path, monkeypatch, size
+):
+    assert s14.MAX_TOOL_RESULT_TOKENS == 5000
+    for layer1 in (False, True):
+        seen = _seen(s14, tmp_path, monkeypatch, size, layer1=layer1)
+        assert len(seen) <= 20000
+        if size <= 20000:
+            assert seen == "x" * size
+        else:
+            note = (
+                f"\n[read_file 已截断: 原始 {size} 字符, 保留 19900 字符]"
+            )
+            assert seen.endswith(note)
+            assert seen[:-len(note)] == "x" * 19900
+
+
+@pytest.mark.parametrize("size", [19999, 20000, 20001, 30000])
+def test_s14_read_file_adversarial_unicode_prefix(
+    s14, tmp_path, monkeypatch, size
+):
+    monkeypatch.setattr(s14, "WORKDIR", tmp_path.resolve())
+    source = ("甲🙂乙🚀丙" * (size // 5 + 1))[:size]
+    path = tmp_path / "unicode.txt"
+    path.write_text(source, encoding="utf-8")
+    assert len(source) == size
+    assert len(source.encode("utf-8")) > size
+
+    output = s14.TOOL_HANDLERS["read_file"](path="unicode.txt")
+    use = {
+        "type": "tool_use", "id": "unicode-read", "name": "read_file",
+        "input": {"path": "unicode.txt"},
+    }
+    result = {
+        "type": "tool_result", "tool_use_id": "unicode-read",
+        "_read_path": "unicode.txt", "content": output,
+    }
+    view = [
+        {"role": "user", "content": "read unicode.txt"},
+        {"role": "assistant", "content": [use]},
+        {"role": "user", "content": [result]},
+    ]
+    normal = s14.compact_context(view, verbose=False)
+    assert normal.applied_layers == ()
+    normal_seen = normal.messages[2]["content"][0]["content"]
+    after, saved = s14.truncate_tool_results(view)
+    after_seen = after[2]["content"][0]["content"]
+
+    expected = source
+    if size > 20000:
+        expected = source[:19900] + (
+            f"\n[read_file 已截断: 原始 {size} 字符, 保留 19900 字符]"
+        )
+    assert output == normal_seen == after_seen == expected
+    assert len(output) <= 20000
+    assert saved == 0
