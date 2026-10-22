@@ -953,3 +953,136 @@ def test_builtin_empty_str_still_autogenerates_uuid(s12, tmp_path) -> None:
     store = s12.RemoteMemoryStore(tmp_path / "m.jsonl", user_id="u")
     record = _id_add(s12, store, "")
     assert type(record.memory_id) is str and len(record.memory_id) == 32
+
+# ==== Verifier 对抗测试（#64）====
+
+
+def test_s12_cloud_memory_adversarial_fixture_section_isolation():
+    import ast
+    from pathlib import Path
+
+    marker = "# ==== Verifier 对抗测试（#64）===="
+    source = Path(__file__).read_text(encoding="utf-8")
+    lines = source.splitlines()
+    boundary = next(i for i, line in enumerate(lines) if line == marker)
+    original = lines[:boundary]
+    tree = ast.parse("\n".join(original))
+
+    allowed = {
+        "test_s12_adversarial.py": "_adv_store",
+        "test_s12_memory_retraction.py": "_retr_store",
+        "test_s12_retract_tool.py": "_tool_store",
+        "test_s12_retract_tool_adversarial.py": "_tool_adv_store",
+        "test_s12_retract_demo.py": "s12_retract_demo",
+        "test_s12_memory_id_type_duplicate.py": "_id_store",
+        "test_s12_append_id_adversarial.py": None,
+        "test_s12_append_id_str_subclass.py": None,
+    }
+    sections = {}
+    current = None
+    seen_sections = []
+    for lineno, line in enumerate(original, 1):
+        if line.startswith("# ==== "):
+            current = line.removeprefix("# ==== ").split("（", 1)[0]
+            assert current in allowed, f"未声明的原段：{line}"
+            seen_sections.append(current)
+        sections[lineno] = current
+    assert seen_sections == list(allowed)
+
+    fixture_names = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for decorator in node.decorator_list:
+            target = decorator.func if isinstance(decorator, ast.Call) else decorator
+            if (
+                isinstance(target, ast.Attribute)
+                and isinstance(target.value, ast.Name)
+                and target.value.id == "pytest"
+                and target.attr == "fixture"
+            ):
+                if isinstance(decorator, ast.Call):
+                    assert not any(
+                        keyword.arg in ("name", None)
+                        for keyword in decorator.keywords
+                    ), f"{node.name} 不得通过 name= 或 **kwargs 隐藏注册名"
+                fixture_names.append(node.name)
+
+    expected = {name for name in allowed.values() if name is not None}
+    assert len(fixture_names) == len(set(fixture_names)), fixture_names
+    assert "store" not in fixture_names
+    assert "s12" not in fixture_names  # 仅复用顶部导入的 s12
+    assert set(fixture_names) == expected
+
+    guarded = expected | {"store", "s12"}
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if not node.name.startswith("test_"):
+            continue
+        section = sections[node.lineno]
+        assert section in allowed, node.name
+        permitted = {"s12"}
+        if allowed[section] is not None:
+            permitted.add(allowed[section])
+        arguments = (
+            node.args.posonlyargs + node.args.args + node.args.kwonlyargs
+        )
+        for argument in arguments:
+            name = argument.arg
+            if name in guarded or name.endswith("_store"):
+                assert name in permitted, (
+                    f"{section} 中 {node.name} 误用了 fixture {name}"
+                )
+
+
+import pytest
+
+
+@pytest.mark.parametrize(
+    "fixture_name, filename, expected_ids",
+    [
+        ("_adv_store", "records.jsonl", ()),
+        ("_retr_store", "m.jsonl", ()),
+        ("_id_store", "m.jsonl", ()),
+        ("_tool_store", "m.jsonl", ("conv-1",)),
+        ("_tool_adv_store", "memory.jsonl", ("target", "keep")),
+    ],
+)
+def test_s12_cloud_memory_adversarial_fixture_semantic_binding(
+    request, monkeypatch, fixture_name, filename, expected_ids
+):
+    module = request.getfixturevalue("s12")
+    sentinels = {name: object() for name in (
+        "DEFAULT_STORE", "DEFAULT_RECALL", "SYSTEM"
+    )}
+    for name, sentinel in sentinels.items():
+        monkeypatch.setattr(module, name, sentinel)
+
+    store = request.getfixturevalue(fixture_name)
+    assert isinstance(store, module.RemoteMemoryStore)
+    assert store.path.name == filename
+    assert store.user_id == "u"
+
+    records = store.read_all()
+    assert tuple(record.memory_id for record in records) == expected_ids
+    assert store.active_records() == records
+    assert all(
+        record.kind is module.MemoryKind.CONVERSATION for record in records
+    )
+
+    if fixture_name in {"_tool_store", "_tool_adv_store"}:
+        assert module.DEFAULT_STORE is store
+        assert module.DEFAULT_RECALL is None
+        if fixture_name == "_tool_adv_store":
+            assert module.SYSTEM is None
+            assert all(
+                record.source.source_id == "adversarial-seed"
+                for record in records
+            )
+        else:
+            assert module.SYSTEM is sentinels["SYSTEM"]
+            assert records[0].source.source_id == "t1"
+    else:
+        for name, sentinel in sentinels.items():
+            assert getattr(module, name) is sentinel
