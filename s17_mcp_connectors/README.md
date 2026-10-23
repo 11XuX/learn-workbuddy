@@ -317,12 +317,12 @@ python s17_mcp_connectors/code.py
 python -m pytest -q tests/test_skill_permissions.py
 ```
 
-试试这些 prompt：
+试试这些输入（[REPL] 是斜杠命令，由 REPL 直接处理；[模型] 是发给模型的 prompt，需要已配置模型）：
 
-1. `List all available connectors`（查看连接器状态）
-2. `Trust the github connector`（模拟信任流程）
-3. `Create a PR on GitHub to add dark mode`（使用 MCP 工具）
-4. `Send a message on Feishu saying hello`（使用另一个连接器）
+1. [REPL] `/list`（查看连接器状态）
+2. [REPL] `/trust github`（模拟信任流程）
+3. [模型] `Create a PR on GitHub to add dark mode`（使用 MCP 工具；先完成第 2 步）
+4. [模型] `Send a message on Feishu saying hello`（使用另一个连接器；先 `/trust feishu`，或用 `/trustall`）
 
 观察重点：未信任的连接器工具不可见；信任后还要通过显式 Skill grant。交集中的工具先经 ToolSearch 加载 schema，再经 DeferExecuteTool 二次校验并执行。
 

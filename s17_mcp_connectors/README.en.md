@@ -209,6 +209,15 @@ python s17_mcp_connectors/code.py
 python -m pytest -q tests/test_skill_permissions.py
 ```
 
+Try these inputs ([REPL] items are slash commands handled directly by the REPL; [Model] items are prompts sent to the model and need a configured model):
+
+1. [REPL] `/list` (show connector status)
+2. [REPL] `/trust github` (simulate the trust flow)
+3. [Model] `Create a PR on GitHub to add dark mode` (uses an MCP tool; finish step 2 first)
+4. [Model] `Send a message on Feishu saying hello` (uses another connector; run `/trust feishu` first, or use `/trustall`)
+
+What to watch: tools of untrusted connectors stay invisible; after trust, an explicit Skill grant is still required. Tools in the intersection first load their schema through ToolSearch, then are re-validated and executed through DeferExecuteTool.
+
 ## Exercises
 
 Use these exercises to change one part of connector configuration, trust, tool discovery, and deferred execution at a time and explain the resulting contract.
