@@ -240,7 +240,7 @@ Use these exercises to change one part of artifact delivery, file previews, and 
 | HTML | `.html`, `.htm` | Preview panel plus artifact card |
 | Image | `.png`, `.jpg`, `.jpeg`, `.svg`, `.gif`, `.webp` | Artifact card with thumbnail |
 | Document | `.pdf`, `.docx`, `.pptx`, `.xlsx` | Downloadable artifact card |
-| Video | `.mp4`, `.mov`, `.avi`, `.webm` | Playable artifact card |
+| Video | `.mp4`, `.mov`, `.webm` | Playable artifact card |
 | Code | `.py`, `.js`, `.ts`, `.go`, `.rs`, `.java`, `.c`, `.cpp` | Syntax-highlighted artifact card |
 | Data | `.json`, `.csv`, `.yaml`, `.xml` | Artifact card |
 | URL | `http://`, `https://` | Browser preview panel |

@@ -254,7 +254,7 @@ present_files(["/workspace/src/main.py"])  # 只是改了几行，不是交付�
 | HTML | .html, .htm | 预览面板 + artifact card |
 | 图片 | .png, .jpg, .jpeg, .svg, .gif, .webp | artifact card（缩略图） |
 | 文档 | .pdf, .docx, .pptx, .xlsx | artifact card（可下载） |
-| 视频 | .mp4, .mov, .avi, .webm | artifact card（可播放） |
+| 视频 | .mp4, .mov, .webm | artifact card（可播放） |
 | 代码 | .py, .js, .ts, .go, .rs, .java, .c, .cpp | artifact card（语法高亮） |
 | 数据 | .json, .csv, .yaml, .xml | artifact card |
 | URL | http://, https:// | 浏览器预览面板 |
