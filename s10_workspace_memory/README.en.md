@@ -234,7 +234,10 @@ Do not promote every sentence to memory, overwrite history during deduplication,
 
 ## Exercises
 
-Use these exercises to change one part of workspace-owned durable facts, provenance, and atomic recovery at a time and explain the resulting contract. Source confidence is already implemented as an in-process confirmation bonus (see Source Confirmation Bonus); confirmation does not survive a restart.
+1. Design a confirmation credential that survives a restart and that even a shell running as the same user cannot forge (for example, a signature whose key is held by a separate process), and explain which operating system boundary it relies on. (Source confidence is already implemented: see the Source Confirmation Bonus section.)
+2. Add a workspace-scoped lease for multi-process reviewers, and show that two concurrently prepared decisions never interleave writes within the same conflict domain.
+3. Implement reading the most recent facts in reverse date order without loading the entire log.
+4. Reflect: why does this lesson keep confirmation in process memory instead of in a log field or a separate file?
 
 ## Next Lesson
 

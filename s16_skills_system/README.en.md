@@ -525,7 +525,9 @@ python -m pytest -q tests/test_skill_permissions.py
 
 ## Exercises
 
-Use these exercises to change one part of skill discovery, frontmatter catalogs, deferred loading, and auditing at a time and explain the resulting contract.
+1. The current `match_skill` uses simple keyword matching. Implement a smarter match that supports synonyms (both "commit" and "submit" match the git-commit skill). Consider: what are the pros and cons of semantic matching versus keyword matching?
+2. Add a `list_skills` tool that lets the model list all available skills with their summaries. Consider: when does the model need to list skills proactively?
+3. Implement skill dependencies: a skill can declare `depends_on: [other-skill]`, and loading it automatically loads the skills it depends on. Consider: how is this similar to and different from npm dependencies?
 
 ## Next Lesson
 

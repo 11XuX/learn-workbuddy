@@ -151,13 +151,25 @@ PROMPT_BUDGET_CHARS=2000 python s15_prompt_assembly/code.py
 
 Do not select by recency alone, mix scopes, spend the entire budget on optional context, or hide why a candidate was excluded.
 
-## Interview Answers
+## Interview Questions
 
-Use these exercises to change one part of memory selection, authority, conflict resolution, and prompt budgets at a time and explain the resulting contract.
+1. What problems do retrieval, selection, packing, and prompt assembly each solve?
+2. Why must scope and confidence come before deduplication, conflicts, and budget?
+3. Why does a conflict need an explicit slot instead of being replaced by string deduplication?
+4. After a high-scoring long candidate exceeds the budget, why may a small candidate backfill while a conflict loser may not?
+5. Why do we need two audits, a memory decision log and a segment decision log?
+6. How can a real tokenizer be integrated without breaking offline regression and the upper-level API?
+7. How can exact deduplication be upgraded to semantic deduplication while keeping deterministic replay?
+8. Why must authority come before score, and why must it still come after the scope and confidence gates?
+9. What are the permission boundaries of `current_turn` and a required PromptSegment, respectively?
 
 ## Exercises
 
-Use these exercises to change one part of memory selection, authority, conflict resolution, and prompt budgets at a time and explain the resulting contract.
+1. Inject the target model's tokenizer, compare how selection differs from the default estimator, and verify that the decision log of each run is reproducible.
+2. Add a structured `fact_type + subject` upstream to produce a more reliable conflict key.
+3. Add a "must keep" Memory type, consider how it differs from the Harness required safety rules, and whether it should fail closed when the budget is insufficient.
+4. Aggregate decision reasons into offline eval metrics, such as scope rejection rate, low-confidence abstention rate, and budget utilization.
+5. Add a signature or event binding to the authority source, and show that the hierarchy is produced by the trusted Harness rather than forged by the model.
 
 ## Next Lesson
 
