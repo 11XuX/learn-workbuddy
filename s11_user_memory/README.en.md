@@ -188,7 +188,9 @@ python s11_user_memory/code.py
 
 ## Exercises
 
-Use these exercises to change one part of user-scoped preferences, projections, and explicit deletion at a time and explain the resulting contract.
+1. Extend the single `source_event_id` into a bounded evidence set, while keeping retries of the same evidence idempotent.
+2. Add an explicit renewal-confirmation flow for preferences that are about to expire, and compare the permission boundaries of "automatic renewal" and "user confirmation".
+3. Using the explicit priorities in s15 as a reference, design a trusted adapter that projects a User Default into a candidate, and show that the model cannot declare `current_turn` or `workspace_override` on its own.
 
 ## Next Lesson
 

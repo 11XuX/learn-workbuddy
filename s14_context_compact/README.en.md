@@ -417,7 +417,10 @@ python s14_context_compact/code.py
 
 ## Exercises
 
-Use these exercises to change one part of context compaction while preserving durable state and evidence at a time and explain the resulting contract.
+1. Persist the audit records returned by `archive_done_pending_items` as append-only JSONL, and show that a crash between "write the audit" and "replace the state" neither loses items nor archives them twice. Follow-up: who confirms completion and archival? If a model tool could also call the migration or archival, through which path could a single "done" sentence in a summary exceed its authority?
+2. The current Layer 4 summary is generated in one shot. Implement incremental summarization: summarize only the newly added messages each time and merge them with the previous summary; then design tests showing that durable state does not take part in the summary merge.
+3. Implement a resolver adapter for a remote object store that keeps the same five-state output and the pre-authorization contract. Design tests showing that redirects, expired signatures, and cross-tenant keys cannot cross the owner boundary.
+4. `estimate_tokens` estimates with 4 characters ≈ 1 token. Install a tokenizer for exact counting, and compare the deviation across Chinese and English text and structured tool results.
 
 ## Next Lesson
 
