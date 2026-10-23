@@ -818,3 +818,42 @@ def test_state_construction_failure_preserves_input_and_allows_retry(
     assert len(records) == 1
     assert records[0].item is due
     assert state.pending_items is original
+
+
+# 合并对抗：守住六段 fixture 的独立命名和 module scope。
+def test_adversarial_fixture_registration_stays_isolated():
+    import ast
+    from collections import Counter
+    from pathlib import Path
+
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    expected = {
+        "_life_s14",
+        "_life_adv_s14",
+        "_life_adv_r2_s14",
+        "_archive_s14",
+        "_adv_s14",
+        "_adv_r2_s14",
+    }
+    definitions = Counter(
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.ClassDef))
+    )
+    assert "s14" not in definitions
+
+    expected_decorator = ast.parse(
+        '@pytest.fixture(scope="module")\ndef fixture(): pass'
+    ).body[0].decorator_list[0]
+
+    for name in sorted(expected):
+        assert definitions[name] == 1, name
+        fixture = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == name
+        )
+        assert len(fixture.decorator_list) == 1, name
+        assert ast.dump(fixture.decorator_list[0]) == ast.dump(
+            expected_decorator
+        ), name
