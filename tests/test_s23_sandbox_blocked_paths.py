@@ -69,3 +69,39 @@ def test_model_tool_call_on_blocked_path_is_not_executed(s23, monkeypatch):
 
 def test_ordinary_read_still_allowed(s23):
     assert s23.check_sandbox("cat README.md")[0]
+
+
+@pytest.mark.parametrize("command", [
+    "cat</etc/hostname",
+    "ls /etc|wc -l",
+])
+def test_verifier_shell_boundary_tool_call_is_blocked(
+    s23, monkeypatch, command
+):
+    def unexpected_execution(*args, **kwargs):
+        pytest.fail("Blocked command reached subprocess.run")
+
+    monkeypatch.setattr(s23.subprocess, "run", unexpected_execution)
+    replies = _FakeMessages()
+    replies.replies[0].content[0].input = {"command": command}
+    monkeypatch.setattr(s23, "client", _Block(messages=replies))
+
+    messages = [{"role": "user", "content": "inspect system path"}]
+    s23.agent_loop(messages)
+
+    result = messages[2]["content"][0]["content"]
+    assert result.startswith("Error: BLOCKED: Touches blocked path /etc")
+    entries = s23.read_today_entries()
+    assert [entry["action"] for entry in entries] == ["sandbox_block"]
+    assert entries[0]["params"]["command"] == command
+
+
+@pytest.mark.parametrize("command", [
+    "cat /tmp/usrdata.txt",
+    "ls ~/variables",
+    "cat ./etc/x",
+    "cat /etcetera.txt",
+])
+def test_verifier_unrelated_paths_remain_allowed(s23, command):
+    allowed, reason = s23.check_sandbox(command)
+    assert allowed, f"{command!r} unexpectedly blocked: {reason}"
