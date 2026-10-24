@@ -468,6 +468,7 @@ if __name__ == "__main__":
     print(f"会话已创建: {session_id}\n")
 
     history = []
+    titled = False
     try:
         while True:
             try:
@@ -512,7 +513,8 @@ if __name__ == "__main__":
             print(f"\n\033[90m  [本轮成本: ${cost:.4f}]\033[0m\n")
 
             # Auto-set title from first query
-            if session_id and len(history) == 2:
+            if session_id and not titled:
+                titled = True
                 title = query[:50] + ("..." if len(query) > 50 else "")
                 db.update_session_title(session_id, title)
 
