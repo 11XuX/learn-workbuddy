@@ -33,11 +33,24 @@ flowchart LR
     C -. "evidence retained" .-> J
 ```
 
-## Storage and Authority
+## Design Goals of This Chapter
 
-Daily facts are evidence, curated history is the adjudicated record, and the rendered memory file contains only active context.
+The s09 JSONL transcript belongs to one session and is the complete execution evidence. This chapter does not copy the chat log again; it builds selective, project-level memory:
 
-## How a Fact Enters Long-Term Memory
+- Different sessions of the same project can recover the same memory; different projects never cross over.
+- Raw facts are append-only, and distillation never deletes evidence.
+- Only facts that are stable, old enough, and important or repeated enter the long-term view.
+- Replaceable project decisions use an explicit `memory_key` to form a conflict domain; a new value replaces the old one only when it is confirmed repeatedly and is newer.
+- Superseded revisions and raw evidence are kept; the prompt only injects the active revision of each conflict domain.
+- Conflicts of equal strength form a persisted review case; only an explicit human decision can choose a candidate.
+- A decision is bound to the evidence fingerprint, the case revision, and the event ID; a stale page or a retry cannot overwrite newer evidence.
+- A multi-file decision first writes an append-only transaction intent; after an exit at any write boundary, a restart rolls it forward idempotently.
+- Curated state is updated by atomic replacement, so a failure still leaves the previous complete file.
+- The memory policy can be verified without an API key.
+
+This is also its main step beyond s09: **the transcript records faithfully; memory selects lossily.**
+
+## Storage Layout and Ownership
 
 ```text
 project/
@@ -53,9 +66,22 @@ project/
         └── MEMORY.md
 ```
 
-## Record the Fact
+| File | Identity | Write method | Can serve as evidence |
+|---|---|---|---|
+| `daily/*.jsonl` | Raw fact log | One-record `O_APPEND` | Yes |
+| `curated.json` | Machine truth for curated state | Temporary file + `os.replace` | Traceable to evidence IDs |
+| `conflicts.json` | Pending and historical conflict snapshots | Temporary file + `os.replace` | Yes; keeps candidates, revisions, and fingerprints |
+| `conflict-adjudications.jsonl` | Human adjudication audit stream | One-event `O_APPEND` | Yes; records actor, rationale, and selected evidence |
+| `conflict-resolution-transactions.jsonl` | Multi-file adjudication recovery log | `O_APPEND` phase events | Yes; keeps the intent hash, before/after snapshots, and commit phase |
+| `MEMORY.md` | Derived view for humans and the prompt | Rebuilt atomically from curated state | No; always rebuildable |
 
-### Normalize and Deduplicate
+The teaching implementation uses the `.learn_workbuddy` namespace so exercise code never touches real product state. `WorkspaceMemory` first resolves the absolute project path and then derives a `workspace_id`; both the logs and the curated files check that id when they are read.
+
+## How a Fact Enters Long-Term Memory
+
+### 1. Record Structured Facts
+
+`MemoryFact` does not accept a long free-form summary; it requires explicit fields:
 
 ```python
 memory.append_daily_log(
@@ -68,7 +94,22 @@ memory.append_daily_log(
 )
 ```
 
-### Resolve Same-Key Conflicts
+`kind` has only four types:
+
+| Type | Example | Distilled by default? |
+|---|---|---|
+| `decision` | Choose SQLite WAL | Yes |
+| `convention` | Paths must be relative to the workspace | Yes |
+| `pitfall` | Never write tokens into memory | Yes |
+| `outcome` | This test passed | No; keep it in the recent log |
+
+Content, importance, and kind are validated before anything is persisted. Each JSON object is encoded as one line and appended with a single `os.write`; `fsync` runs before the call returns.
+
+`memory_key` is an optional, stable conflict domain that the harness or the tool caller provides explicitly. It only allows lowercase words with `.`, `_`, and `-` separators, for example `runtime.python-version`. It describes "which question this memory answers", not the answer itself: `Use Python 3.11` and `Use Python 3.12` can share the same key. Older calls that do not set the field keep using a content-derived key; the upgrade never guesses or merges them.
+
+### 2. Distill Through an Explicit Policy
+
+The default policy works like this:
 
 ```text
 age reaches 30 days
@@ -76,9 +117,35 @@ AND type is one of decision / convention / pitfall
 AND (importance >= 4 OR reappears after normalization >= 2 times)
 ```
 
-### Append-Only Decisions
+These rules deliberately do not let an LLM decide directly "what is worth remembering forever". A production system may use a model during candidate extraction, but the retention conditions, the scope, and the evidence relationships should still be controlled by the harness.
 
-### Preserve Source Evidence
+Curated memory without a `memory_key` still gets a stable key from `kind + normalized content`. Explicitly keyed memory first forms a conflict domain by `memory_key` and then follows these rules:
+
+1. A new fact with the same content as the active one only merges `evidence_ids`; it does not create a new revision.
+2. Different content must pass the normal promotion gate and also be confirmed by at least `supersession_repeat_threshold` independent facts; the default is 2, so even a single high-importance fact cannot directly overwrite an existing decision.
+3. The newest time of the candidate must be later than the `last_seen` of the active revision; stale evidence cannot roll back the current value.
+4. Multiple candidates are ranked by importance, number of independent pieces of evidence, and newest time; when the best scores tie, it fails closed, keeps the current revision, and creates a persisted `MemoryConflictCase`.
+5. The single winner becomes the next active revision; the old one is marked `superseded`, and the two point to each other through `supersedes` / `superseded_by`.
+
+Every revision keeps its `revision` and `evidence_ids`, so running `distill` repeatedly is idempotent and the full decision history can be audited. `DistillReport` also reports `superseded`, `conflicts`, `queued_conflicts`, `conflict_case_ids`, and `stale`, so the reason an overwrite was refused is observable.
+
+### 3. Tied Conflicts Enter the Human Review Queue
+
+A case is not a one-line "a conflict happened" notice; it is a complete, recoverable observation snapshot:
+
+- `conflict_id`: generated deterministically from the workspace, the memory key, and the evidence fingerprint;
+- `revision`: the case version for the same memory key;
+- `candidates`: the current active incumbent and the tied challenger;
+- `evidence_ids`: the immutable source set of each candidate;
+- `observed_fact_ids`: all facts seen in that conflict domain at detection time;
+- `active_entry_key`: the active curated revision at detection time;
+- `open / resolved / superseded`: the case lifecycle.
+
+Running `distill()` again does not create the same case twice. When the evidence changes and the candidates are still tied, the old open case is marked `superseded` and the new fingerprint forms the next revision. Callers can only get open cases through `list_conflicts()`; these candidates never enter `MEMORY.md` or the agent prompt.
+
+### 4. Explicit Adjudication and Append-Only Audit
+
+A decision must submit the case revision that was just seen:
 
 ```python
 case = memory.list_conflicts()[0]
@@ -94,7 +161,21 @@ event = memory.resolve_conflict(
 )
 ```
 
-### Atomic Updates, Locks, and Recovery
+Before it runs, it checks again that:
+
+1. the case is still open and its revision has not changed;
+2. the current active entry is still the version seen at detection time;
+3. the observed fact IDs of the current workspace match the fingerprint snapshot;
+4. the selected candidate really belongs to the case;
+5. the event ID has not been used for a different decision.
+
+Any new evidence raises `StaleConflictResolutionError`, asking the reviewer to look at the candidates again. Choosing the challenger creates the next curated revision; choosing the incumbent only records "keep as is" and never creates a fake revision. After the checks pass, the harness first writes the complete decision intent to `conflict-resolution-transactions.jsonl` and then updates the canonical state. The success event is appended to `conflict-adjudications.jsonl` with the actor, rationale, case revision, selected evidence IDs, the original active key, and the resulting active key.
+
+Retrying the same event ID with exactly the same arguments returns the original event without writing the audit again or creating a revision; reusing an event ID to choose a different candidate is explicitly refused. The adjudication API belongs only to trusted harness/human entry points; it is not in the model tool list of `MemoryAwareAgent`.
+
+### 5. Preserve Raw Evidence
+
+Distillation builds a derived view; it is not log cleanup:
 
 ```text
 daily fact log ──select──> curated.json ──render──> MEMORY.md
@@ -102,7 +183,22 @@ daily fact log ──select──> curated.json ──render──> MEMORY.md
        └──── retained ──────┘  evidence_ids
 ```
 
-### Prompt Injection Boundary
+Deleting old logs would leave long-term conclusions without a source and make a wrong distillation impossible to recompute. Real storage cleanup belongs to a separate retention/backup policy and is not mixed with memory distill.
+
+### 6. Atomic Updates, Transaction Journal, and Restart Recovery
+
+Opening `MEMORY.md` directly with `"w"` can leave half a file behind if the process crashes. This chapter uses a temporary file in the same directory:
+
+1. write the complete content;
+2. `flush + fsync`;
+3. atomically replace the target with `os.replace`; platforms that support directory handles also `fsync` the containing directory, while Windows safely skips directory sync that `os.open` does not support;
+4. on failure, clean up the temporary file and leave the old version unchanged.
+
+The Windows fallback still fully writes, flushes, and syncs the temporary file before the same-directory `os.replace`, so half a new file is never exposed as canonical state. POSIX platforms also sync the directory entry to strengthen rename durability after a power loss.
+
+Atomic replacement of a single file cannot make three files one atomic transaction. One human decision has to update `curated.json`, close the case in `conflicts.json`, and append an audit record to `conflict-adjudications.jsonl`; finishing only some of these would leave project memory and the review/audit state contradicting each other.
+
+So before any business side effect, `resolve_conflict()` first appends an intent with complete before/after snapshots to the transaction journal. It then advances step by step:
 
 ```text
 prepared
@@ -111,6 +207,12 @@ prepared
   -> audit_appended
   -> committed
 ```
+
+Each phase first completes its target write and then appends a phase event with the same `transaction_id` and `intent_sha256`. If the process exits right after the target write but before the phase event is appended, a new `WorkspaceMemory(project_dir)` compares the disk state: if it still equals before, it redoes the step; if it already equals after, it continues; if it is neither before nor after, it fails closed as corrupted state. Audit events are deduplicated by the original event ID, so repeated recovery never creates duplicate revisions or audit lines. A modified journal intent, a skipped phase, or a workspace mismatch is also explicitly refused.
+
+`curated.json` is the canonical memory state, `conflicts.json` is the canonical review queue state, and `MEMORY.md` is a rebuildable projection. If the process exits between replacing the curated state and the projection, the recovery transaction repairs the stale projection from the canonical state and then goes on to close the case and append the audit. Creating a new `WorkspaceMemory(project_dir)` instance is enough to recover an unfinished decision and then load facts, curated entries, conflict cases, the adjudication log, and the prompt context; it never depends on any object from the old process.
+
+The current schema is v2; the reader still accepts v1 daily facts and curated state. Old entries are recovered with keyless legacy semantics and saved as v2 at the next successful distill write, without inferring conflict domains automatically. When keyed state is read, it also checks that each domain has exactly one active revision, that revision numbers are contiguous, and that the forward and backward links match; corrupted state raises an explicit error instead of silently picking an answer.
 
 ## Main Code Paths
 
@@ -242,24 +344,6 @@ Do not promote every sentence to memory, overwrite history during deduplication,
 ## Next Lesson
 
 - The lesson shows how to record, normalize, deduplicate, and recover project facts without treating every conversation sentence as memory.
-
-**Reference tables**
-
-| File | Identity | Write method | Can serve as evidence |
-|---|---|---|---|
-| `daily/*.jsonl` | Raw fact log | One-record `O_APPEND` | Yes |
-| `curated.json` | Machine truth for curated state | Temporary file + `os.replace` | Traceable to evidence IDs |
-| `conflicts.json` | Pending and historical conflict snapshots | Temporary file + `os.replace` | Yes; keeps candidates and revisions |
-| `conflict-adjudications.jsonl` | Human adjudication audit stream | One-event `O_APPEND` | Yes; actor, rationale, and selected evidence |
-| `conflict-resolution-transactions.jsonl` | Multi-file recovery log | Append-only phase events | Yes; intent hash and commit phase |
-| `MEMORY.md` | Derived human/prompt view | Rebuilt atomically from curated state | No; always rebuildable |
-
-| Type | Example | Distilled by default? |
-|---|---|---|
-| `decision` | Choose SQLite WAL | Yes |
-| `convention` | Paths must be relative to the workspace | Yes |
-| `pitfall` | Never write tokens into memory | Yes |
-| `outcome` | This test passed | No; keep it in the recent log |
 
 The original Chinese README remains the primary-language reference. This English companion keeps the same code, diagrams, local paths, and chapter structure so readers can switch languages without losing runnable details.
 
