@@ -214,11 +214,11 @@ Each phase first completes its target write and then appends a phase event with 
 
 The current schema is v2; the reader still accepts v1 daily facts and curated state. Old entries are recovered with keyless legacy semantics and saved as v2 at the next successful distill write, without inferring conflict domains automatically. When keyed state is read, it also checks that each domain has exactly one active revision, that revision numbers are contiguous, and that the forward and backward links match; corrupted state raises an explicit error instead of silently picking an answer.
 
-## Main Code Paths
+## Prompt Injection Boundary
 
 The main paths are append, distill, resolve, recover, and render; each path preserves provenance and workspace scope.
 
-## Failure and Recovery Tests
+## Main Code Flow
 
 ```text
 append_daily_log
@@ -251,7 +251,7 @@ restart
   -> rebuild bounded prompt context
 ```
 
-## Where It Sits in the Loop
+## Offline Run and Verification
 
 ```bash
 python3 s10_workspace_memory/code.py --demo
@@ -269,7 +269,7 @@ python3 s10_workspace_memory/code.py
 /resolve <conflict_id> <revision> <candidate_id> <event_id> <rationale>
 ```
 
-## Run
+## Where It Sits in the Three Memory Layers
 
 ![Chapter diagram 2](./images/three-layer-memory-en.svg)
 
