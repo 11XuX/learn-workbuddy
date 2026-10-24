@@ -40,8 +40,28 @@ def test_blocked_path_is_rejected(s23, command):
     assert not allowed, f"{command!r} allowed: {reason}"
 
 
-def test_model_tool_call_on_blocked_path_is_not_executed(s23):
-    out = s23.run_with_sandbox("cat /etc/hostname")
+class _Block:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+class _FakeMessages:
+    def __init__(self):
+        call = _Block(type="tool_use", id="t1", name="bash",
+                      input={"command": "cat /etc/hostname"})
+        done = _Block(type="text", text="done")
+        self.replies = [_Block(stop_reason="tool_use", content=[call]),
+                        _Block(stop_reason="end_turn", content=[done])]
+
+    def create(self, **kwargs):
+        return self.replies.pop(0)
+
+
+def test_model_tool_call_on_blocked_path_is_not_executed(s23, monkeypatch):
+    monkeypatch.setattr(s23, "client", _Block(messages=_FakeMessages()))
+    messages = [{"role": "user", "content": "show hostname"}]
+    s23.agent_loop(messages)
+    out = messages[2]["content"][0]["content"]
     assert out.startswith("Error:"), out
     actions = [e["action"] for e in s23.read_today_entries()]
     assert actions == ["sandbox_block"], actions
