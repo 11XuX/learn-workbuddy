@@ -214,11 +214,18 @@ Each phase first completes its target write and then appends a phase event with 
 
 The current schema is v2; the reader still accepts v1 daily facts and curated state. Old entries are recovered with keyless legacy semantics and saved as v2 at the next successful distill write, without inferring conflict domains automatically. When keyed state is read, it also checks that each domain has exactly one active revision, that revision numbers are contiguous, and that the forward and backward links match; corrupted state raises an explicit error instead of silently picking an answer.
 
-## Main Code Paths
+## Prompt Injection Boundary
 
-The main paths are append, distill, resolve, recover, and render; each path preserves provenance and workspace scope.
+`get_context_for_agent()` injects only two parts:
 
-## Failure and Recovery Tests
+- the compact `MEMORY.md`;
+- at most 6 recent workspace facts.
+
+It never stuffs every daily log, conflict candidate, or session transcript back into the context. Before distillation completes, keyed raw facts also cannot bypass the conflict policy by appearing as recent facts; the prompt only sees the current active revision of each conflict domain. The value of memory is not in "storing more" but in having an explicit budget and priority at recall time.
+
+`MemoryAwareAgent` reads this bounded view before every model turn and provides a structured `write_memory` tool. Whether the tool loop continues is decided by the `tool_use` blocks in the response, not by some provider-specific stop-reason string.
+
+## Main Code Flow
 
 ```text
 append_daily_log
@@ -251,27 +258,39 @@ restart
   -> rebuild bounded prompt context
 ```
 
-## Where It Sits in the Loop
+## Offline Run and Verification
+
+The keyless demo shared by every chapter:
 
 ```bash
 python3 s10_workspace_memory/code.py --demo
 ```
 
+Run only this chapter's behavior tests:
+
 ```bash
 python3 -m pytest -q tests/test_workspace_memory.py
 ```
+
+The tests cover: project isolation, append order, the distill gate, idempotence, evidence preservation, atomic replace failures, key validation, confirmation of new values, fail-closed conflicts, case deduplication, choosing the challenger, keeping the incumbent, idempotent adjudication audit, staleness protection against new evidence, case revisions, cross-workspace rejection, revision chain validation, v1 migration, the five-phase transaction journal, fault injection at eight persistent write boundaries, interrupted projection repair, incumbent recovery, intent tamper protection, and repeated recovery.
+
+With a model configured, you can run the interactive path:
 
 ```bash
 python3 s10_workspace_memory/code.py
 ```
 
+The interactive CLI uses `/conflicts` to list open cases, then adjudicates with this format:
+
 ```text
 /resolve <conflict_id> <revision> <candidate_id> <event_id> <rationale>
 ```
 
-## Run
+## Where It Sits in the Three Memory Layers
 
 ![Chapter diagram 2](./images/three-layer-memory-en.svg)
+
+Workspace memory belongs to the current project; s11 handles cross-project user preferences, and s12 then discusses remote profile/recall. The three layers cannot be told apart only by "where the file lives"; what matters more is that their owner, write permission, retention policy, and recall timing differ.
 
 ## Source Confirmation Bonus
 
@@ -332,7 +351,21 @@ after restart: is_session_confirmed session-confirmed=False forged=False
 
 ## Common Mistakes
 
-Do not promote every sentence to memory, overwrite history during deduplication, or resolve a conflict without recording the decision and evidence.
+- **Treating the transcript as memory**: the full trajectory quickly fills the context.
+- **Saving permanently whatever the model says is important**: without a harness gate, memory gets polluted by guesses and prompt injection.
+- **Deleting the logs after distillation**: the evidence is lost and nothing can be recomputed or audited.
+- **Overwriting the curated file directly**: a crash can corrupt long-term state.
+- **Isolating only by path string**: relative paths and symlinks can give the same project several scopes.
+- **Writing a single passing test as a long-term rule**: an outcome should stay in the recent log and is not promoted automatically.
+- **Using the answer text as the `memory_key`**: when the value changes it becomes a different conflict domain and the supersession relation is lost; the key should describe the stable question, for example `runtime.python-version`.
+- **Letting a single new fact override an existing decision**: high importance is not confirmation; supersession must meet the independent repeated-evidence gate.
+- **Injecting every candidate into the prompt and letting the model choose**: this bypasses the harness conflict policy; unresolved candidates should stay in the evidence log.
+- **Returning the conflict count only in memory**: after the app restarts, the reviewer does not know what to handle and cannot prove which evidence was seen at the time.
+- **Not checking revision/fingerprint at adjudication**: a stale page can overwrite a newer fact that arrived later.
+- **Letting the model call the resolve tool**: candidate content cannot grant itself adjudication authority; the human entry point must sit inside the trusted harness boundary.
+- **Creating a new revision when choosing the incumbent**: this fakes a change of fact; keeping the status quo only needs an audit event.
+- **Treating three atomic writes as one atomic transaction**: each file being complete does not mean the files are consistent with each other; a replayable intent must be persisted first.
+- **Unconditionally overwriting the current files during recovery**: if the disk state equals neither before nor after, there may already be a newer update or corruption, so recovery should fail closed instead of rolling back evidence.
 
 ## Exercises
 
@@ -343,7 +376,7 @@ Do not promote every sentence to memory, overwrite history during deduplication,
 
 ## Next Lesson
 
-- The lesson shows how to record, normalize, deduplicate, and recover project facts without treating every conversation sentence as memory.
+s11 raises the owner from the workspace to the user: preferences must be reused across projects, while being deduplicated and keeping project rules from polluting the global profile.
 
 The original Chinese README remains the primary-language reference. This English companion keeps the same code, diagrams, local paths, and chapter structure so readers can switch languages without losing runnable details.
 
