@@ -3,7 +3,8 @@
 code.py sets the title only when ``len(history) == 2`` after the first
 agent_loop. A first turn where the model calls ``bash`` leaves history at 4
 items (user, tool_use, tool_result, final text), so the session keeps
-``'New Session'`` in /sessions and in the sessions table.
+``'New Session'`` in /sessions and in the sessions table. A second query
+must not overwrite the title taken from the first one.
 The fake client below plays the model; no network is used.
 """
 
@@ -24,7 +25,7 @@ NS = types.SimpleNamespace
 
 
 def _fake_anthropic(first_turn_uses_tool: bool):
-    replies = [NS(type="text", text="done")]
+    replies = [NS(type="text", text="done"), NS(type="text", text="again")]
     if first_turn_uses_tool:
         replies.insert(0, NS(type="tool_use", id="t1", name="bash", input={"command": "echo hi"}))
 
@@ -40,7 +41,7 @@ def _fake_anthropic(first_turn_uses_tool: bool):
 
 @pytest.mark.parametrize("uses_tool", [False, True], ids=["text-only", "bash-tool"])
 def test_first_query_becomes_title(tmp_path, monkeypatch, uses_tool):
-    answers = ["list the files here", "q"]
+    answers = ["list the files here", "and the hidden ones?", "q"]
     monkeypatch.setitem(sys.modules, "anthropic", _fake_anthropic(uses_tool))
     monkeypatch.setenv("MODEL_ID", "offline-test-model")
     monkeypatch.setenv("WORKBUDDY_HOME", str(tmp_path / "home"))
