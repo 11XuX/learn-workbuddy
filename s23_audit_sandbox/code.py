@@ -37,7 +37,7 @@ from mini_workbuddy.chapter_demo import maybe_run_chapter_demo as _wb_maybe_run_
 _wb_maybe_run_chapter_demo(__file__, PROGRESSION)
 from mini_workbuddy.chapter_demo import prepare_chapter_provider as _wb_prepare_chapter_provider
 _wb_prepare_chapter_provider()
-import os, sys, time, json, hashlib, subprocess
+import os, re, sys, time, json, hashlib, subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -258,6 +258,12 @@ def check_sandbox(command: str) -> tuple[bool, str]:
 
     if level == "BLOCKED":
         return False, f"BLOCKED: Command matches blocked pattern"
+
+    # Blocked paths match on a path boundary, so /tmp/usrdata.txt is not /usr
+    for path in SANDBOX_CONFIG["blocked_paths"]:
+        # shell=True also splits words on < > | ; & ( ) and backticks
+        if re.search(r"(?:^|[\s'\"<>|;&()`])" + re.escape(path) + r"(?=[/\s'\"<>|;&()`]|$)", command):
+            return False, f"BLOCKED: Touches blocked path {path}"
 
     if level == "HIGH_RISK":
         return False, f"HIGH_RISK: Touches personal file zone — requires explicit consent"
