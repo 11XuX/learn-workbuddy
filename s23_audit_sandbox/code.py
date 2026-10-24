@@ -261,7 +261,8 @@ def check_sandbox(command: str) -> tuple[bool, str]:
 
     # Blocked paths match on a path boundary, so /tmp/usrdata.txt is not /usr
     for path in SANDBOX_CONFIG["blocked_paths"]:
-        if re.search(r"(?:^|[\s'\"])" + re.escape(path) + r"(?:/|\s|$)", command):
+        # shell=True also splits words on < > | ; & ( ) and backticks
+        if re.search(r"(?:^|[\s'\"<>|;&()`])" + re.escape(path) + r"(?=[/\s'\"<>|;&()`]|$)", command):
             return False, f"BLOCKED: Touches blocked path {path}"
 
     if level == "HIGH_RISK":
