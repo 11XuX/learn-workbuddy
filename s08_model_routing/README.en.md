@@ -309,6 +309,8 @@ In the real implementation, `auto` decides based on task type, context length, a
 
 ## Cost Estimate
 
+Take a typical conversation as an example. The user asks, "Take a look at this project's architecture, then fix the login bug in src/auth.py":
+
 ### All-Craft Plan (No Tiering)
 
 | Step | Agent | Tokens | Model | Cost |
@@ -331,11 +333,20 @@ In the real implementation, `auto` decides based on task type, context length, a
 | 5 | CLI (bug fix) | 20K | craft | $0.30 |
 | **Total** | | **50K** | | **$0.349** |
 
+**Savings: 53%**. On top of that, the lite model has lower latency, so the user also waits less.
+
+With 100 conversations a day:
+- All craft: $75/day → $2,250/month
+- Tiered routing: $35/day → $1,050/month
+- **$1,200 saved per month**
+
+---
+
 ## WorkBuddy Architecture Comparison
 
-This comparison maps model selection, effort levels, and cost-aware routing to the corresponding WorkBuddy-style harness boundary.
-
 ### product.json — Model Registry
+
+WorkBuddy defines its models in `product.json`; each model includes a context window, an output limit, and feature tags:
 
 ```json
 {
@@ -365,7 +376,7 @@ This comparison maps model selection, effort levels, and cost-aware routing to t
 
 ### Model Tag Routing
 
-Use these exercises to change one part of model selection, effort levels, and cost-aware routing at a time and explain the resulting contract.
+WorkBuddy does not route by model ID directly; it routes by **tag**:
 
 ```javascript
 // Specify a model label in the Agent definition, not a specific model ID
@@ -389,7 +400,11 @@ function resolveModel(tag) {
 }
 ```
 
+This tag mechanism lets users swap the underlying model flexibly - switching craft from Claude to GLM only requires a configuration change, not a code change.
+
 ### effort and summary Parameters
+
+Reasoning models have `effort` and `summary` injected at API call time:
 
 ```javascript
 // Inject reasoning-model parameters
@@ -407,7 +422,24 @@ function buildModelParams(model, agentConfig) {
 }
 ```
 
+---
+
 ## Code Walkthrough
+
+`code.py` implements a complete model-routing demo:
+
+1. **ModelTier enum** — defines the three tiers LITE / DEFAULT / CRAFT
+2. **ModelInfo data class** — the cost, latency, and capability parameters of each model
+3. **ModelRouter class** — routes an ordinary Agent name to its tier and records the cost
+   - `route_request(agent_name)` → returns ModelInfo
+   - `call_model(model, prompt)` → performs the mock call after routing is done
+   - `CostTracker` → accumulates tokens and cost per tier
+4. **MemorySelectorRouter** — receives bounded candidates, fixes `tools=()`, and returns only allowlisted IDs
+5. **"Use AI to manage AI" demo** — the lite selector first picks 3 IDs out of 10 candidates, and the craft model sees only those three records
+6. **Cost comparison** — the all-craft plan vs the tiered routing plan, printed as a comparison table
+7. **Agent loop** — simulates one complete conversation, showing the runtime difference between the selector and a general-purpose Agent
+
+Key code:
 
 ```python
 # Routing table: Agent → model tier
@@ -426,11 +458,22 @@ def route_request(self, agent_name: str) -> ModelInfo:
     return self.models[tier]
 ```
 
+---
+
 ## Run
 
 ```bash
 python s08_model_routing/code.py
 ```
+
+No API key is needed - all LLM responses are mocked. What to watch:
+
+1. **Routing table**: is each Agent routed to the correct model tier?
+2. **"Use AI to manage AI" demo**: does the selector always go through lite, keep `tools=()`, and output only IDs from the candidate set?
+3. **Cost comparison**: how much does tiered routing save compared with all-craft?
+4. **Agent loop**: in one conversation, how many times is lite used, how many times default, and how many times craft?
+
+---
 
 ## Exercises
 
@@ -438,10 +481,9 @@ Use these exercises to change one part of model selection, effort levels, and co
 
 ## Next Lesson
 
-- A small routing contract maps task roles to lite, default, or craft model tiers and keeps the Memory Selector tool-free.
+Model routing is in place: each kind of Agent uses its own model tier. But once a conversation ends, it is gone - the next time you open the same project, everything discussed before is forgotten. s09 covers conversation persistence - a JSONL append-only log, 6 event types, and crash recovery.
 
-The all-craft baseline costs about $0.75 for this example, while tiered
-routing costs about $0.349, a reduction of roughly 53%.
+s09 JSONL Transcript → append-only writes, event replay, crash recovery.
 
 The original Chinese README remains the primary-language reference. This English companion keeps the same code, diagrams, local paths, and chapter structure so readers can switch languages without losing runnable details.
 
