@@ -34,7 +34,15 @@ The lesson maps task roles and effort levels to model tiers while keeping routin
 
 Do not route every task to the most expensive model or let model selection leak into each individual tool and memory call.
 
-## How It Works
+## The Memory Selector's Separate Boundary
+
+| Comparison | Memory Selector | General Tool Agent |
+|---|---|---|
+| Input | Query plus bounded retrieved candidates | User goal, context, and tool catalog |
+| Output | Stable IDs from the candidate set | Text or a tool call |
+| Tools | `tools=()`; schemas are rejected | Can discover, select, and execute tools |
+| Side effects | None; produces one derived selection | May read files or call external systems |
+| Failure handling | Drop unknown IDs, deduplicate, and cap the result | Handled by the tool protocol and permission layer |
 
 ```python
 request = MemorySelectionRequest(
@@ -76,13 +84,30 @@ The harness needs to balance quality, latency, and cost while choosing a model a
 └──────────────────────────────────────────────────────────────┘
 ```
 
-## The AI-Manages-AI Pattern
+| Tier | Role | Cost | Typical use |
+|------|------|------|---------|
+| **lite** | Filtering, classification, and screening | ~$0.25/M | Memory selection, hook evaluation, search |
+| **default** | Planning, execution, and compaction | ~$3/M | General tasks, planning, context compaction |
+| **craft** | Reasoning and user interaction | ~$15/M | Main CLI agent and complex reasoning |
+
+## Model Matrix
 
 A lightweight selector can narrow candidates or choose an effort level before the main agent spends the budget needed for deeper reasoning.
 
+| Model ID | Name | Context window | Max output | Features | Typical use |
+|----------|------|-----------|---------|---------|---------|
+| `default` | Default | 200K | 24K | Tool calling | Main Agent default |
+| `deepseek-v4-pro` | Deepseek-V4-Pro | 1M | 50K | Reasoning + vision | Long-context reasoning |
+| `glm-5.0-turbo` | GLM-5.0-Turbo | 200K | 48K | Agent optimized | Agent tasks |
+| `glm-5v-turbo` | GLM-5v-Turbo | 200K | 38K | Native multimodal | Vision tasks |
+| `hunyuan-2.0` | Hunyuan-2.0 | 128K | 16K | Reasoning + vision | Tencent model |
+| `default-1.2` | Claude-4.0-Sonnet | 200K | 24K | Reasoning + vision | High-quality reasoning |
+| `codewise-*` | Code family | - | 256 | Code completion | IDE completion |
+| **`lite`** | Lightweight tier | - | - | Cost optimization | **Pre-screening** |
+
 ## How It Works
 
-### The `auto` Mode
+### Model Tiers: lite / default / craft
 
 ```
 Capability/cost axis:
@@ -98,9 +123,34 @@ Low cost ───────────────────────�
   │   ◄── more concurrency                          less concurrency ──►   │
 ```
 
-### Cost Estimate
+| Tier | Selection rule | Latency | Concurrency |
+|------|---------|------|------|
+| lite | Simple task, short output, no reasoning chain | Low | High |
+| default | Context understanding and multi-step execution | Medium | Moderate |
+| craft | Deep reasoning and direct user interaction | High | Low |
 
-### All-Craft Baseline
+### Agent-Model Mapping
+
+| Agent | Model tier | Reason |
+|-------|------------|--------|
+| CLI (main) | craft | Direct user interaction needs the strongest capability |
+| general-purpose | default | General subtasks need tools and multiple steps |
+| Explore | lite | Repository search and filtering need little deep reasoning |
+| Plan | default | Architecture planning needs code understanding |
+| compact | default | Context compaction must understand the conversation |
+| contextSummary | default | Emergency summaries need understanding |
+| memorySelector | lite | Select relevant records from memory |
+| promptHookEvaluator | lite | Short safety decision |
+| contentAnalyzer | lite | Classification |
+| terminalTitleGenerator | lite | Very short output |
+| summaryGenerator | lite | Compression task |
+| insightsAnalyzer | lite | Lightweight analysis |
+| agentInstructions | default | Agent instruction handling |
+| fork | default | Child process with tool calls |
+| statusline-setup | default | Status configuration |
+| Bash | default | Bash execution with tools |
+
+### The "Use AI to Manage AI" Philosophy
 
 ```
 User: "What was the plan for fixing that bug last time?"
@@ -151,7 +201,20 @@ Total cost: $0.00125 + $0.075 = $0.076
 Compared with loading everything: $0.75 → saved 90%
 ```
 
-### Tiered Routing
+| Scenario | What lite does | What craft/default does |
+|---|---|---|
+| Memory retrieval | Select 3 records from 50 | Answer using the selected records |
+| Hook evaluation | Decide whether output is safe | Show the result when safe |
+| Code exploration | Search for relevant files | Read and understand file contents |
+| Context compaction | Mark important passages | Generate the compact summary |
+
+### The effort Parameter (low/medium/high)
+
+| Effort | Behavior | Typical use |
+|--------|------|---------|
+| `low` | Fast answer with little reasoning | Simple questions and status checks |
+| `medium` | Balanced reasoning and speed | General tasks |
+| `high` | Deep reasoning | Complex architecture and difficult bugs |
 
 ```python
 # Same model, different effort
@@ -163,7 +226,7 @@ response = client.messages.create(
 )
 ```
 
-### WorkBuddy Architecture Comparison
+### auto Mode: Automatic Selection
 
 This comparison maps model selection, effort levels, and cost-aware routing to the corresponding WorkBuddy-style harness boundary.
 
@@ -177,17 +240,35 @@ Assess task complexity
     └── Complex (reasoning/user interaction)   ──► craft
 ```
 
-## `product.json`: Model Registry
+## Cost Estimate
 
-### Model Tag Resolution
+### All-Craft Plan (No Tiering)
 
-### `effort` and `summary`
+| Step | Agent | Tokens | Model | Cost |
+|------|-------|--------|-------|------|
+| 1 | Explore (file search) | 8K | craft | $0.12 |
+| 2 | Plan (architecture analysis) | 15K | craft | $0.225 |
+| 3 | memorySelector (memory search) | 5K | craft | $0.075 |
+| 4 | promptHookEvaluator (hook) | 2K | craft | $0.03 |
+| 5 | CLI (bug fix) | 20K | craft | $0.30 |
+| **Total** | | **50K** | | **$0.75** |
+
+### Tiered Routing Plan
+
+| Step | Agent | Tokens | Model | Cost |
+|------|-------|--------|-------|------|
+| 1 | Explore (file search) | 8K | lite | $0.002 |
+| 2 | Plan (architecture analysis) | 15K | default | $0.045 |
+| 3 | memorySelector (memory search) | 5K | lite | $0.00125 |
+| 4 | promptHookEvaluator (hook) | 2K | lite | $0.0005 |
+| 5 | CLI (bug fix) | 20K | craft | $0.30 |
+| **Total** | | **50K** | | **$0.349** |
 
 ## WorkBuddy Architecture Comparison
 
 This comparison maps model selection, effort levels, and cost-aware routing to the corresponding WorkBuddy-style harness boundary.
 
-### Run
+### product.json — Model Registry
 
 ```json
 {
@@ -215,7 +296,7 @@ This comparison maps model selection, effort levels, and cost-aware routing to t
 }
 ```
 
-### Exercises
+### Model Tag Routing
 
 Use these exercises to change one part of model selection, effort levels, and cost-aware routing at a time and explain the resulting contract.
 
@@ -241,7 +322,7 @@ function resolveModel(tag) {
 }
 ```
 
-### Next Lesson
+### effort and summary Parameters
 
 ```javascript
 // Inject reasoning-model parameters
@@ -291,89 +372,6 @@ Use these exercises to change one part of model selection, effort levels, and co
 ## Next Lesson
 
 - A small routing contract maps task roles to lite, default, or craft model tiers and keeps the Memory Selector tool-free.
-
-**Reference tables**
-
-| Comparison | Memory Selector | General Tool Agent |
-|---|---|---|
-| Input | Query plus bounded retrieved candidates | User goal, context, and tool catalog |
-| Output | Stable IDs from the candidate set | Text or a tool call |
-| Tools | `tools=()`; schemas are rejected | Can discover, select, and execute tools |
-| Side effects | None; produces one derived selection | May read files or call external systems |
-| Failure handling | Drop unknown IDs, deduplicate, and cap the result | Handled by the tool protocol and permission layer |
-
-| Tier | Role | Cost | Typical use |
-|------|------|------|---------|
-| **lite** | Filtering, classification, and screening | ~$0.25/M | Memory selection, hook evaluation, search |
-| **default** | Planning, execution, and compaction | ~$3/M | General tasks, planning, context compaction |
-| **craft** | Reasoning and user interaction | ~$15/M | Main CLI agent and complex reasoning |
-
-| Model ID | Name | Context window | Max output | Features | Typical use |
-|----------|------|-----------|---------|---------|---------|
-| `default` | Default | 200K | 24K | Tool calling | Main Agent default |
-| `deepseek-v4-pro` | Deepseek-V4-Pro | 1M | 50K | Reasoning + vision | Long-context reasoning |
-| `glm-5.0-turbo` | GLM-5.0-Turbo | 200K | 48K | Agent optimized | Agent tasks |
-| `glm-5v-turbo` | GLM-5v-Turbo | 200K | 38K | Native multimodal | Vision tasks |
-| `hunyuan-2.0` | Hunyuan-2.0 | 128K | 16K | Reasoning + vision | Tencent model |
-| `default-1.2` | Claude-4.0-Sonnet | 200K | 24K | Reasoning + vision | High-quality reasoning |
-| `codewise-*` | Code family | - | 256 | Code completion | IDE completion |
-| **`lite`** | Lightweight tier | - | - | Cost optimization | **Pre-screening** |
-
-| Tier | Selection rule | Latency | Concurrency |
-|------|---------|------|------|
-| lite | Simple task, short output, no reasoning chain | Low | High |
-| default | Context understanding and multi-step execution | Medium | Moderate |
-| craft | Deep reasoning and direct user interaction | High | Low |
-
-| Agent | Model tier | Reason |
-|-------|------------|--------|
-| CLI (main) | craft | Direct user interaction needs the strongest capability |
-| general-purpose | default | General subtasks need tools and multiple steps |
-| Explore | lite | Repository search and filtering need little deep reasoning |
-| Plan | default | Architecture planning needs code understanding |
-| compact | default | Context compaction must understand the conversation |
-| contextSummary | default | Emergency summaries need understanding |
-| memorySelector | lite | Select relevant records from memory |
-| promptHookEvaluator | lite | Short safety decision |
-| contentAnalyzer | lite | Classification |
-| terminalTitleGenerator | lite | Very short output |
-| summaryGenerator | lite | Compression task |
-| insightsAnalyzer | lite | Lightweight analysis |
-| agentInstructions | default | Agent instruction handling |
-| fork | default | Child process with tool calls |
-| statusline-setup | default | Status configuration |
-| Bash | default | Bash execution with tools |
-
-| Scenario | What lite does | What craft/default does |
-|---|---|---|
-| Memory retrieval | Select 3 records from 50 | Answer using the selected records |
-| Hook evaluation | Decide whether output is safe | Show the result when safe |
-| Code exploration | Search for relevant files | Read and understand file contents |
-| Context compaction | Mark important passages | Generate the compact summary |
-
-| Effort | Behavior | Typical use |
-|--------|------|---------|
-| `low` | Fast answer with little reasoning | Simple questions and status checks |
-| `medium` | Balanced reasoning and speed | General tasks |
-| `high` | Deep reasoning | Complex architecture and difficult bugs |
-
-| Step | Agent | Tokens | Model | Cost |
-|------|-------|--------|-------|------|
-| 1 | Explore (file search) | 8K | craft | $0.12 |
-| 2 | Plan (architecture analysis) | 15K | craft | $0.225 |
-| 3 | memorySelector (memory search) | 5K | craft | $0.075 |
-| 4 | promptHookEvaluator (hook) | 2K | craft | $0.03 |
-| 5 | CLI (bug fix) | 20K | craft | $0.30 |
-| **Total** | | **50K** | | **$0.75** |
-
-| Step | Agent | Tokens | Model | Cost |
-|------|-------|--------|-------|------|
-| 1 | Explore (file search) | 8K | lite | $0.002 |
-| 2 | Plan (architecture analysis) | 15K | default | $0.045 |
-| 3 | memorySelector (memory search) | 5K | lite | $0.00125 |
-| 4 | promptHookEvaluator (hook) | 2K | lite | $0.0005 |
-| 5 | CLI (bug fix) | 20K | craft | $0.30 |
-| **Total** | | **50K** | | **$0.349** |
 
 The all-craft baseline costs about $0.75 for this example, while tiered
 routing costs about $0.349, a reduction of roughly 53%.
