@@ -24,17 +24,26 @@ flowchart LR
 
 ## Prerequisites
 
-The examples use named model tiers and deterministic cost metadata, so routing can be tested without a provider key.
+- Model routing is a trade-off between cost, latency, and quality.
+- Classification, filtering, and formatting suit light models; deep reasoning and final decisions suit strong models.
+- Routing itself must also be observable; otherwise saving money turns into randomly degraded intelligence.
+- The Memory Selector is an internal judge, not a general-purpose Agent that owns a tool loop.
 
 ## WorkBuddy-Style Mechanisms in This Chapter
 
-The lesson maps task roles and effort levels to model tiers while keeping routing decisions inspectable and measurable.
+- Abstracts the "use AI to manage AI" idea from public architecture research into three slot types: lite/default/craft.
+- Gives auxiliary tasks and main reasoning tasks different model budgets.
+- Records the reason for each route, for debugging and evaluation.
 
 ## Common Mistakes
 
-Do not route every task to the most expensive model or let model selection leak into each individual tool and memory call.
+- Routing every task to the strongest model lets cost spiral out of control.
+- Routing every task to a cheap model makes the quality of key steps unstable.
+- Routing only by keywords is easily misled by complex tasks.
 
 ## The Memory Selector's Separate Boundary
+
+`memorySelector` and the `general-purpose` Agent both call a model, but they are not the same kind of runtime:
 
 | Comparison | Memory Selector | General Tool Agent |
 |---|---|---|
@@ -43,6 +52,10 @@ Do not route every task to the most expensive model or let model selection leak 
 | Tools | `tools=()`; schemas are rejected | Can discover, select, and execute tools |
 | Side effects | None; produces one derived selection | May read files or call external systems |
 | Failure handling | Drop unknown IDs, deduplicate, and cap the result | Handled by the tool protocol and permission layer |
+
+Therefore the Memory Selector does not query the database, does not call `read_file`, and does not answer the user's question directly. The S12 Recall stage produces the candidates first; S08 only decides which model those candidates are routed to and guarantees that the selection call has no tool capability. This keeps candidate content from luring the internal selector into acting beyond the retrieval boundary.
+
+In the code, `MemorySelectorRouter` exposes the single selector entry point:
 
 ```python
 request = MemorySelectionRequest(
@@ -56,11 +69,28 @@ assert result.route.model.tier is ModelTier.LITE
 assert result.route.tools == ()
 ```
 
+The offline mock only proves the route, zero-tool, and ID allowlist contracts; it does not claim to simulate real semantic relevance. Candidate generation, score, stable rank, and no-result semantics belong to the later Recall chapter.
+
 ## The Problem
 
-The harness needs to balance quality, latency, and cost while choosing a model appropriate to the work being performed.
+s10 covered several kinds of Agent: the CLI main Agent, Explore, Plan, compact, memorySelector, promptHookEvaluator... each Agent has its own job.
+
+But there is a question here: **should they all use the same model?**
+
+Suppose you run every task on the most expensive Claude-4.0-Sonnet (about $15/M tokens):
+
+- memorySelector needs to pick 3 relevant memories out of 50 - that is simple classification; does it need a $15/M model?
+- promptHookEvaluator judges whether one hook output is safe - that is a yes/no decision; does it need a $15/M model?
+- Explore searches the codebase for files - that is grep plus a summary; does it need a $15/M model?
+- The CLI main Agent talks with the user directly - this one really does need the strongest model.
+
+In one conversation, 5-10 sub-Agents may run in the background. If they all use the most expensive model, one conversation costs $0.5+, and 100 conversations a day cost $50+. More importantly, **stuffing many low-difficulty tasks into a high-capability model actually lowers context quality** - the model is flooded with boring classification tasks and its reasoning depth is diluted.
+
+---
 
 ## The Solution
+
+**Tiered model routing**: instead of using the same model for every task, route each task by difficulty to a different cost tier.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -90,9 +120,13 @@ The harness needs to balance quality, latency, and cost while choosing a model a
 | **default** | Planning, execution, and compaction | ~$3/M | General tasks, planning, context compaction |
 | **craft** | Reasoning and user interaction | ~$15/M | Main CLI agent and complex reasoning |
 
+Core principle: **cheap models do the coarse filtering, expensive models do the reasoning**.
+
+---
+
 ## Model Matrix
 
-A lightweight selector can narrow candidates or choose an effort level before the main agent spends the budget needed for deeper reasoning.
+WorkBuddy's `product.json` defines 12+ available models that cover different vendors, capabilities, and price points:
 
 | Model ID | Name | Context window | Max output | Features | Typical use |
 |----------|------|-----------|---------|---------|---------|
@@ -104,6 +138,15 @@ A lightweight selector can narrow candidates or choose an effort level before th
 | `default-1.2` | Claude-4.0-Sonnet | 200K | 24K | Reasoning + vision | High-quality reasoning |
 | `codewise-*` | Code family | - | 256 | Code completion | IDE completion |
 | **`lite`** | Lightweight tier | - | - | Cost optimization | **Pre-screening** |
+
+A few key details:
+
+- **`lite`** is not a specific model but a **cost tag** - it tells the routing layer "use the cheapest one"
+- **`default`** is the main Agent's default choice, balancing capability and cost
+- **`craft`** is the tag of the CLI main Agent; it faces user interaction and needs the strongest capability
+- Reasoning models support the `effort` (low/medium/high) and `summary` (auto) parameters
+
+---
 
 ## How It Works
 
@@ -123,6 +166,8 @@ Low cost ───────────────────────�
   │   ◄── more concurrency                          less concurrency ──►   │
 ```
 
+The logic behind the three tiers:
+
 | Tier | Selection rule | Latency | Concurrency |
 |------|---------|------|------|
 | lite | Simple task, short output, no reasoning chain | Low | High |
@@ -130,6 +175,8 @@ Low cost ───────────────────────�
 | craft | Deep reasoning and direct user interaction | High | Low |
 
 ### Agent-Model Mapping
+
+Each of the several kinds of Agent from s10 is bound to a model tier:
 
 | Agent | Model tier | Reason |
 |-------|------------|--------|
@@ -150,7 +197,13 @@ Low cost ───────────────────────�
 | statusline-setup | default | Status configuration |
 | Bash | default | Bash execution with tools |
 
+The pattern: **internal Agents that run in the background mostly use lite, user-facing ones use craft, and the ones in between use default**.
+
 ### The "Use AI to Manage AI" Philosophy
+
+This is WorkBuddy's most central cost-optimization idea.
+
+**Traditional approach**: stuff every memory, every tool, and all the code into the main Agent's context.
 
 ```
 User: "What was the plan for fixing that bug last time?"
@@ -170,6 +223,8 @@ User: "What was the plan for fixing that bug last time?"
 └─────────────────────────────┘
 Cost: 50K tokens × $15/M = $0.75
 ```
+
+**WorkBuddy approach**: first use the cheap lite model for coarse filtering, then use the expensive model on the filtered result.
 
 ```
 User: "What was the plan for fixing that bug last time?"
@@ -201,6 +256,10 @@ Total cost: $0.00125 + $0.075 = $0.076
 Compared with loading everything: $0.75 → saved 90%
 ```
 
+**Core insight**: instead of feeding all information to the expensive model, let the cheap model filter first and let the expensive model see only the filtered result. Cost drops by an order of magnitude, and context quality actually improves.
+
+This pattern recurs throughout WorkBuddy:
+
 | Scenario | What lite does | What craft/default does |
 |---|---|---|
 | Memory retrieval | Select 3 records from 50 | Answer using the selected records |
@@ -209,6 +268,8 @@ Compared with loading everything: $0.75 → saved 90%
 | Context compaction | Mark important passages | Generate the compact summary |
 
 ### The effort Parameter (low/medium/high)
+
+Reasoning models (such as deepseek-v4-pro and hunyuan-2.0) support an `effort` parameter that controls reasoning depth:
 
 | Effort | Behavior | Typical use |
 |--------|------|---------|
@@ -226,9 +287,11 @@ response = client.messages.create(
 )
 ```
 
+This amounts to one more level inside a model tier: with the same craft model, low effort can come close to the cost of default, and only high effort is truly "all-out".
+
 ### auto Mode: Automatic Selection
 
-This comparison maps model selection, effort levels, and cost-aware routing to the corresponding WorkBuddy-style harness boundary.
+Besides specifying `lite`/`default`/`craft` by hand, WorkBuddy also supports an `auto` mode - the system picks the best model automatically.
 
 ```
 Simplified auto-routing logic:
@@ -239,6 +302,10 @@ Assess task complexity
     ├── Medium (planning/execution/compaction) ──► default
     └── Complex (reasoning/user interaction)   ──► craft
 ```
+
+In the real implementation, `auto` decides based on task type, context length, and historical call patterns. But WorkBuddy's default strategy is more conservative - most Agents bind a model tier explicitly and do not rely on auto.
+
+---
 
 ## Cost Estimate
 
