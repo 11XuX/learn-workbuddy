@@ -7,7 +7,9 @@ runs ``subprocess.run(..., text=True)``, so stdout that is not valid UTF-8
 (``cat`` of a PNG or a GBK note) raises ``UnicodeDecodeError`` inside
 ``tools.run``. It is not in ``MiniAgent.prompt``'s except list, so the prompt
 raises and the transcript ends at ``tool_call``. ``read_file`` on the same
-files already succeeds (``errors="replace"``).
+files already succeeds (``errors="replace"``). The png bytes (0x81, 0xff) fail
+under UTF-8, ASCII, GBK and cp1252 locales. The demo's real-API loop calls
+``tools.run`` with no ``try``, so ``tools.run`` itself must return too.
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ from mini_workbuddy.tools import ToolRegistry
 
 FILES = {
     "notes-gbk.txt": "会议纪要：周五发布".encode("gbk"),
-    "logo.png": b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\xff\xfe",
+    "logo.png": b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x81\xff\xfe",
 }
 
 
@@ -33,10 +35,13 @@ def _run(tmp_path: Path, prompt: str):
         (tmp_path / name).write_bytes(data)
     config = HarnessConfig(root_dir=tmp_path / "home")
     storage = Storage(config)
-    agent = MiniAgent(storage, ToolRegistry(config, storage), EventBus())
+    tools = ToolRegistry(config, storage)
+    agent = MiniAgent(storage, tools, EventBus())
     session = storage.create_session(str(tmp_path), "pytest session")
     try:
         agent.prompt(session, prompt)
+        if prompt.startswith("bash "):  # examples/mini_workbuddy_demo path
+            tools.run("bash", prompt[5:], session)
     except Exception as exc:  # the REST/ACP caller would see this
         raised = f"{type(exc).__name__}: {exc}"
     else:
