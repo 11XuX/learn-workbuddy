@@ -7,6 +7,7 @@ handler. ``_read_file`` calls ``path.read_text()`` (strict UTF-8), so a GBK
 note or a PNG raises ``UnicodeDecodeError`` (a ``ValueError``) straight out of
 ``execute_tool``; ``ComprehensiveAgent.run()`` has no other guard, so the REPL
 exits and the audit log keeps ``tool_execute`` without a ``tool_result``.
+The png bytes (0x81, 0xff) fail under UTF-8, ASCII, GBK and cp1252 locales.
 """
 
 from __future__ import annotations
@@ -47,7 +48,7 @@ def s24(tmp_path, monkeypatch):
     "name, data",
     [
         ("notes-gbk.txt", "会议纪要：周五发布".encode("gbk")),
-        ("logo.png", b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\xff\xfe"),
+        ("logo.png", b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x81\xff\xfe"),
     ],
     ids=["gbk-text", "png"],
 )
