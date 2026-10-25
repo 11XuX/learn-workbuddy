@@ -127,7 +127,7 @@ class ToolRegistry:
                 cwd=session.cwd,
                 env=build_subprocess_env(session.cwd),
                 shell=True,
-                text=True,
+                text=True, encoding="utf-8", errors="replace",
                 capture_output=True,
                 timeout=30,
             )
