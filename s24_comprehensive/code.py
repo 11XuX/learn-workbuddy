@@ -516,7 +516,7 @@ def _scoped_path(raw: str) -> Path:
 
 def _read_file(inputs: dict) -> str:
     path = _scoped_path(inputs["path"])
-    return path.read_text()[:10_000] if path.exists() else "File not found"
+    return path.read_text(encoding="utf-8", errors="replace")[:10_000] if path.exists() else "File not found"
 
 
 def _write_file(inputs: dict) -> str:
