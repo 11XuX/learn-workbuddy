@@ -67,3 +67,46 @@ def test_read_file_directory_is_already_a_tool_result(s24):
     (workspace / "sub").mkdir()
     out = module.execute_tool("read_file", {"path": "sub"})
     assert out.startswith("Tool failed:")
+
+
+# --- Verifier adversarial (#84) ---
+
+
+def test_read_file_preserves_text_replaces_bytes_and_limits_output(s24):
+    module, workspace = s24
+    path = workspace / "mixed.txt"
+    prefix = "会议记录\n"
+    data = prefix.encode("utf-8") + b"\xff" + b"x" * 10_000
+    path.write_bytes(data)
+
+    out = module.execute_tool("read_file", {"path": path.name})
+
+    expected = prefix + "\ufffd" + "x" * 10_000
+    assert out == expected[:10_000]
+    assert path.read_bytes() == data
+
+
+def test_read_file_utf8_chinese_survives_non_utf8_locale(tmp_path):
+    """Explicit encoding="utf-8": under a C/ASCII locale a UTF-8 note must read back intact."""
+    import os
+    import subprocess
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    text = "提交前运行 ruff\n"
+    (ws / "zh.txt").write_bytes(text.encode("utf-8"))
+    script = (
+        "import importlib.util, locale, sys\n"
+        f"sys.path.insert(0, {str(ROOT / 'tests' / 'stubs')!r})\n"
+        f"spec = importlib.util.spec_from_file_location('s24c', {str(ROOT / 's24_comprehensive' / 'code.py')!r})\n"
+        "m = importlib.util.module_from_spec(spec); sys.modules['s24c'] = m; spec.loader.exec_module(m)\n"
+        "print(locale.getpreferredencoding(False)); print(ascii(m.execute_tool('read_file', {'path': 'zh.txt'})))\n"
+    )
+    env = dict(os.environ, LC_ALL="C", LANG="C", PYTHONUTF8="0", PYTHONCOERCECLOCALE="0",
+               MODEL_ID="offline-test-model", WORKBUDDY_HOME=str(tmp_path / "home"))
+    proc = subprocess.run([sys.executable, "-c", script], cwd=ws, env=env, capture_output=True, text=True)
+    lines = proc.stdout.splitlines()
+    if lines and lines[0].lower().replace("-", "") == "utf8":
+        pytest.skip("platform C locale is UTF-8; cannot simulate a non-UTF-8 locale")
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    assert lines[-1] == ascii(text)
