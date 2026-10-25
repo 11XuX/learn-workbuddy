@@ -76,9 +76,22 @@ Tool execution
        Context grows by ~the original size    Context grows only ~30KB
 ```
 
+| Representation | Contains | Consumer | Owns the full body? |
+|------|----------|----------|------------------|
+| Artifact file | Complete tool output | Audit, on-demand reads, full recovery | Yes; the sole body owner |
+| Context pointer | Source ID, summary, SHA-256, path, head/tail preview | Current Agent turn | No; bounded representation |
+| Memory reference | Required summary, path, digest, and source fields | Later Memory policy | No; it intentionally has no `content` |
+
+| Concept | Operating system | WorkBuddy |
+|------|---------|-----------|
+| Memory | RAM | Context window |
+| External storage | Disk swap | `tool-results/*.txt` |
+| Memory entry | Page-table entry | Pointer plus preview |
+| Read-back | Page fault | Read tool |
+
 ## How It Works
 
-### Write to Disk
+### Threshold Detection
 
 ```python
 BASH_MAX_OUTPUT_LENGTH = 30000        # chars — Bash Output exceeds this value → externalized
@@ -93,7 +106,7 @@ def should_externalize(self, output: str, tool_name: str) -> bool:
         return len(output.encode("utf-8")) > CODEBUDDY_TOOL_RESULT_THRESHOLD_KB * 1024
 ```
 
-### Replace Context with a Pointer and Preview
+### Write to Disk
 
 ```
 ~/.workbuddy/projects/<workspace>/<session>/
@@ -116,7 +129,7 @@ def _next_artifact_path(self) -> Path:
         return path
 ```
 
-### Artifact to Memory: Reference Only
+### Context Replacement (pointer + preview)
 
 ```python
 def make_pointer(self, output: str, artifact: ArtifactReference) -> str:
@@ -134,7 +147,7 @@ def make_pointer(self, output: str, artifact: ArtifactReference) -> str:
     )
 ```
 
-### Reference-Aware Lifecycle and GC
+### Artifact → Memory Passes Only a Thin Reference
 
 ```python
 memory_reference = result.artifact.for_memory()
@@ -144,7 +157,7 @@ memory_reference = result.artifact.for_memory()
 payload = memory_reference.to_dict()
 ```
 
-### Crash-Recoverable Lease Journal
+### Reference-Aware Lifecycle and GC
 
 ```text
 ArtifactMemoryReference
@@ -155,7 +168,7 @@ ArtifactMemoryReference
          └─ retain_until?          # optional lease expiration time
 ```
 
-#### Generation-Fenced Owner Reconciliation
+#### Crash-recoverable lease journal
 
 ```text
 1. PREPARED  ── append + fsync ──▶ the lease intent is persisted
@@ -189,7 +202,16 @@ def publish_validated_reference():
     return memory_adapter.append(memory_reference)
 ```
 
-#### Read: A Page-Fault-Like Operation
+#### Generation-fenced owner reconciliation
+
+| Owner observation | Harness behavior | Lease result |
+|---|---|---|
+| `PUBLISHED`, source ID and full digest match | Append `COMMITTED` inside the fence | Protect the reference by its lease |
+| `PUBLISHED`, identity mismatch | Record `pending_conflict` | Keep `PREPARED` and protect indefinitely |
+| `UNKNOWN` | Record `pending_unknown` | Keep `PREPARED` and retry later |
+| Unsealed `ABSENT` | Owner writes a tombstone with CAS and advances generation | Append `ABORTED` after sealing |
+| Generation changed before sealing | Record `pending_stale` | Keep `PREPARED` and observe again |
+| Sealed `ABSENT` | Do not seal again; complete the journal transition | Append `ABORTED` |
 
 ```python
 # The adapter maps the database row version, ETag, or object generation to a fence.
@@ -197,6 +219,18 @@ reports = journal.reconcile_pending(memory_owner_adapter)
 for report in reports:
     audit_sink.append(report.to_dict())
 ```
+
+| Status | Meaning | Delete? |
+|---|---|---|
+| `retained_referenced` | Active claim and full digest match | No |
+| `retained_recent` | Orphan TTL has not elapsed | No |
+| `retained_limit` | Maximum deletion count reached | No |
+| `retained_unknown` / `denied` | Outside the S13 file, directory, or symlink boundary | No |
+| `retained_corrupt` | Claim conflicts with file digest or snapshot | No |
+| `missing_referenced` | Active claim points to a missing artifact | No file to delete; report the dangling reference |
+| `planned_delete` | TTL elapsed and no active claim exists | Dry-run only reports |
+| `deleted` | Revalidation succeeded during apply | Yes |
+| `already_missing` / `race_detected` | Repeated run or file changed after planning | No |
 
 ```python
 claim = ArtifactRetentionClaim.from_memory_reference(
@@ -214,7 +248,7 @@ plan = externalizer.plan_cleanup_from_journal(journal, policy=policy)
 report = externalizer.apply_cleanup_from_journal(plan, journal)
 ```
 
-### The OS Analogy: Virtual Memory
+### On-Demand Read (Read = Page Fault)
 
 ```
 Agent context                           Disk
@@ -243,11 +277,24 @@ def read_artifact(self, artifact: ArtifactReference, offset: int = 0, limit: int
     return "\n".join(selected)
 ```
 
-## WorkBuddy Architecture Comparison
+## OS Analogy: Virtual Memory Paging
 
 This comparison maps large-output artifacts, context pointers, and retention to the corresponding WorkBuddy-style harness boundary.
 
-## Output Thresholds
+| OS concept | WorkBuddy equivalent | Explanation |
+|---------|---------------------|------|
+| Physical memory (RAM) | Context window | Limited, fast, and expensive |
+| Disk swap | `tool-results/*.txt` | Large, slower, and cheap |
+| Page-table entry | Pointer plus preview | Small reference to the actual data |
+| Page fault | Read tool reads a disk file | Bring data back on demand |
+| Demand paging | Externalize output and Read on demand | Do not load data until needed |
+| Process isolation | Independent SubAgent context | Prevent child context pollution |
+| Asynchronous I/O | Background task mechanism | Long work does not block context |
+| Memory reclamation / GC | Compact and auto-compact | Compact when context fills |
+| Filesystem | Three-layer memory system | Remote -> user -> workspace |
+| Replay limit | Replay at most 1000 events | Prevent history from exhausting memory |
+
+## Three-Layer Defense Framework
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -274,7 +321,7 @@ This comparison maps large-output artifacts, context pointers, and retention to 
 └─────────────────────────────────────────────────────────┘
 ```
 
-## Artifact Directory Layout
+## Why This Comes Before Smart Memory
 
 ```
 Without output externalization:
@@ -292,7 +339,7 @@ With output externalization:
 
 This comparison maps large-output artifacts, context pointers, and retention to the corresponding WorkBuddy-style harness boundary.
 
-### Artifact Pointer Protocol
+### Environment Variables and Thresholds
 
 ```bash
 # Bash output exceeds this length → write to disk, keep head+tail in context
@@ -302,7 +349,7 @@ BASH_MAX_OUTPUT_LENGTH=30000
 CODEBUDDY_TOOL_RESULT_THRESHOLD_KB=50
 ```
 
-### Desktop Delivery Contract
+### On-Disk File Layout
 
 ```
 ~/.workbuddy/projects/<workspace-hash>/<session-id>/
@@ -312,7 +359,7 @@ CODEBUDDY_TOOL_RESULT_THRESHOLD_KB=50
     └── ...
 ```
 
-### Code Walkthrough
+### Head + Tail Strategy for Bash Output
 
 ```javascript
 // Bash output handling in the agent bridge (simplified)
@@ -330,7 +377,7 @@ if (output.length > BASH_MAX_OUTPUT_LENGTH) {
 }
 ```
 
-### Run
+### Placeholder Strategy for Non-Bash Tools
 
 ```javascript
 // non-Bash tool result handling (simplified)
@@ -344,7 +391,7 @@ if (resultSize > CODEBUDDY_TOOL_RESULT_THRESHOLD_KB * 1024) {
 }
 ```
 
-### Exercises
+### Working with Background Tasks
 
 Use these exercises to change one part of large-output artifacts, context pointers, and retention at a time and explain the resulting contract.
 
@@ -368,55 +415,6 @@ Use these exercises to change one part of large-output artifacts, context pointe
 ## Next Lesson
 
 - Large tool results become immutable artifacts. The prompt keeps a bounded preview, digest, provenance, and a readable pointer.
-
-**Reference tables**
-
-| Representation | Contains | Consumer | Owns the full body? |
-|------|----------|----------|------------------|
-| Artifact file | Complete tool output | Audit, on-demand reads, full recovery | Yes; the sole body owner |
-| Context pointer | Source ID, summary, SHA-256, path, head/tail preview | Current Agent turn | No; bounded representation |
-| Memory reference | Required summary, path, digest, and source fields | Later Memory policy | No; it intentionally has no `content` |
-
-| Concept | Operating system | WorkBuddy |
-|------|---------|-----------|
-| Memory | RAM | Context window |
-| External storage | Disk swap | `tool-results/*.txt` |
-| Memory entry | Page-table entry | Pointer plus preview |
-| Read-back | Page fault | Read tool |
-
-| Owner observation | Harness behavior | Lease result |
-|---|---|---|
-| `PUBLISHED`, source ID and full digest match | Append `COMMITTED` inside the fence | Protect the reference by its lease |
-| `PUBLISHED`, identity mismatch | Record `pending_conflict` | Keep `PREPARED` and protect indefinitely |
-| `UNKNOWN` | Record `pending_unknown` | Keep `PREPARED` and retry later |
-| Unsealed `ABSENT` | Owner writes a tombstone with CAS and advances generation | Append `ABORTED` after sealing |
-| Generation changed before sealing | Record `pending_stale` | Keep `PREPARED` and observe again |
-| Sealed `ABSENT` | Do not seal again; complete the journal transition | Append `ABORTED` |
-
-| Status | Meaning | Delete? |
-|---|---|---|
-| `retained_referenced` | Active claim and full digest match | No |
-| `retained_recent` | Orphan TTL has not elapsed | No |
-| `retained_limit` | Maximum deletion count reached | No |
-| `retained_unknown` / `denied` | Outside the S13 file, directory, or symlink boundary | No |
-| `retained_corrupt` | Claim conflicts with file digest or snapshot | No |
-| `missing_referenced` | Active claim points to a missing artifact | No file to delete; report the dangling reference |
-| `planned_delete` | TTL elapsed and no active claim exists | Dry-run only reports |
-| `deleted` | Revalidation succeeded during apply | Yes |
-| `already_missing` / `race_detected` | Repeated run or file changed after planning | No |
-
-| OS concept | WorkBuddy equivalent | Explanation |
-|---------|---------------------|------|
-| Physical memory (RAM) | Context window | Limited, fast, and expensive |
-| Disk swap | `tool-results/*.txt` | Large, slower, and cheap |
-| Page-table entry | Pointer plus preview | Small reference to the actual data |
-| Page fault | Read tool reads a disk file | Bring data back on demand |
-| Demand paging | Externalize output and Read on demand | Do not load data until needed |
-| Process isolation | Independent SubAgent context | Prevent child context pollution |
-| Asynchronous I/O | Background task mechanism | Long work does not block context |
-| Memory reclamation / GC | Compact and auto-compact | Compact when context fills |
-| Filesystem | Three-layer memory system | Remote -> user -> workspace |
-| Replay limit | Replay at most 1000 events | Prevent history from exhausting memory |
 
 The original Chinese README remains the primary-language reference. This English companion keeps the same code, diagrams, local paths, and chapter structure so readers can switch languages without losing runnable details.
 
