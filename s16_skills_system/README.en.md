@@ -346,12 +346,18 @@ def audit_skill(
 
 ## Deferred Tool Loading (deferLoading)
 
+The Skills system solves the problem of "loading operating guides on demand". But WorkBuddy faces another, larger token cost: **the tool definitions themselves**.
+
 ### Problem: Token Explosion of Tool Schemas
+
+A WorkBuddy-style desktop agent often has dozens of built-in tools, several kinds of MCP connectors, and a set of built-in skills. Every tool definition contains a name, a description, and an input_schema (a JSON Schema with parameters). If everything is loaded at startup:
 
 ```
 80+ tool definitions × ~500 tokens/tools = ~40,000 tokens
   (consume context whether or not they are used)
 ```
+
+Before the system prompt does any work, it has already eaten 40,000 tokens.
 
 ### Solution: Two-Step Loading Pattern
 
@@ -371,6 +377,8 @@ WorkBuddy approach: load on demand (deferLoading)
     ├─ load the full input_schema only at this point
     └─ validate parameters, then execute
 ```
+
+The idea is exactly the same as Skills: **list the catalog first, expand when needed**.
 
 ### Teaching Implementation (CLI bundle)
 
@@ -406,6 +414,8 @@ for (let tool of tools) {
 
 ### Deferred Tools in WorkBuddy
 
+The system prompt shows that the following tools use deferLoading and normally do not load their schemas:
+
 ```
 Deferred tools (loaded only when used):
   - ImageGen: text-to-image generation
@@ -418,9 +428,11 @@ Deferred tools (loaded only when used):
   - mcp__weixinpay: WeChat Pay MCP
 ```
 
+When the agent needs one of these tools, it first searches by keyword through `ToolSearch` to find the tool name, then loads the full schema and executes it through `DeferExecuteTool`.
+
 ## Three-Level Skills Architecture
 
-(**Production shape**; this teaching REPL currently does not read these directories.)
+The two-level storage mentioned earlier (user-level + project-level) is a simplified model. In practice WorkBuddy's Skills have three levels (**production shape**; this teaching REPL currently does not read these directories):
 
 ```
 ┌─────────────────────────────────────────────┐
@@ -447,7 +459,11 @@ Deferred tools (loaded only when used):
 └─────────────────────────────────────────────┘
 ```
 
+Priority: project-level > user-level > built-in. More specific conventions override more general guides.
+
 ### Skill Directory Structure
+
+A complete Skill has more than SKILL.md; it can also contain scripts and resources:
 
 ```
 my-skill/
@@ -460,7 +476,11 @@ my-skill/
       └── template.html
 ```
 
+When a Skill is loaded, the contents of SKILL.md are injected into the agent's context — this is what "temporarily extending the agent's expertise" means. scripts and references are not injected automatically; the agent can read them on demand.
+
 ## WorkBuddy Architecture Comparison
+
+The Skills system of a production desktop agent is the first layer of the extension ecosystem (Skills → MCP → Experts).
 
 ### Two-Level Storage
 
@@ -474,6 +494,8 @@ my-skill/
 {workspace}/.workbuddy/skills/    # project-level (shared with the team)
   api-design/SKILL.md
 ```
+
+Project-level skills take priority — more specific project conventions override general user-level skills.
 
 ### Frontmatter Fields
 
@@ -541,15 +563,19 @@ const SkillTool = {
 
 ### Security Audit
 
+When installing a marketplace skill, WorkBuddy runs a security audit:
+
 | Risk level | Meaning | Handling |
 |------|------|------|
 | P0 | Contains dangerous operations such as `rm -rf`, `sudo`, or `eval` | Reject installation |
 | P1 | Contains network or installation operations such as `curl` or `npm install` | Ask the user |
 | P2 | No detected dangerous pattern | Install directly |
 
+In addition, `permission_diff()` lists separately the tools, network access, read paths, and write paths that a new version adds relative to the old one. Any permission expansion goes to P1 manual approval; at runtime `authorize_skill_tool()` checks the actual tool calls again, so that installation is not audited while execution goes unchecked.
+
 ### Automatic Skill Saving
 
-A WorkBuddy design principle: **after a multi-step task, capture the workflow as a skill**. In this chapter the model proposes the save through `SkillCreate`, and every write is audited first.
+A WorkBuddy design principle: **after a multi-step task, capture the workflow as a skill**. In this chapter the model proposes the save through `SkillCreate`, and every write is audited first. This makes the agent grow stronger with use — the next time it meets a similar task it loads the skill directly instead of exploring from scratch.
 
 ### Write-Boundary Audit and Pending Approval
 
@@ -570,7 +596,20 @@ MODEL_ID=offline python3 s16_skills_system/code.py   # then type: /skill-gate-de
 
 ## Code Walkthrough
 
-Follow discovery, frontmatter indexing, trigger matching, deferred loading, permission checking, and tool execution.
+`code.py` implements the complete Skills system:
+
+1. **`parse_skill_md()`** — parses the YAML frontmatter and body of SKILL.md
+2. **`build_skill_index()`** — the teaching version builds the index from `SEED_SKILLS` (production scans the user-level/project-level directories)
+3. **`match_skill()`** — keyword matching of user input against trigger words
+4. **`load_skill()`** — loads a skill's full content on demand
+5. **`create_skill()`** — creates a new skill (marked agent_created)
+6. **`audit_skill()`** — P0/P1/P2 security audit before installation
+7. **`parse_skill_permissions()` / `permission_diff()`** — strictly parses permissions and shows escalations
+8. **`authorize_skill_tool()`** — validates tools, network access, and structured paths before execution
+9. **`Skill` tool** — a skill-loading tool the model can call proactively
+10. **agent loop** — automatically matches skills on input and reassembles the system prompt after loading
+
+Three example skills (git-commit, code-review, deploy-check) are preset and simulated in memory. After running it, try saying "help me commit code" — and watch skill matching and loading happen.
 
 ## Run
 
@@ -587,7 +626,9 @@ python -m pytest -q tests/test_skill_permissions.py
 
 ## Next Lesson
 
-- A skill combines frontmatter, instructions, optional scripts, and explicit permissions. Indexing stays small; full content is loaded on demand.
+Skills are the first layer of the extension ecosystem — loading operating guides on demand. But some domain knowledge cannot be covered by a single "skill" — it is a whole collection of tools, rules, and context. That calls for expert packs.
+
+s17 MCP Connectors → standard protocol, trust model, tool-pool assembly.
 
 The original Chinese README remains the primary-language reference. This English companion keeps the same code, diagrams, local paths, and chapter structure so readers can switch languages without losing runnable details.
 
