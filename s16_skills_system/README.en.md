@@ -28,19 +28,30 @@ flowchart LR
 
 ## Prerequisites
 
-The examples use local SKILL.md files and a small permission manifest; no marketplace or network service is required.
+- A skill is an operating guide loaded on demand, not a tool itself.
+- A good skill usually contains SKILL.md, scripts, references, and assets.
+- The skill catalog and the skill body should be loaded separately.
 
 ## WorkBuddy-Style Mechanisms in This Chapter
 
-The lesson keeps the skill index small, loads full instructions on demand, and applies an explicit permission ceiling.
+- Absorb the Skills + Plugins + Hooks extension approach from public architecture research.
+- Use progressive disclosure to control token cost.
+- Let skills carry scripts, reference material, and resource files.
 
 ## Common Mistakes
 
-Do not load every skill into every prompt, execute a skill before its permissions are checked, or confuse discovery with full loading.
+- Injecting the full text of every skill into the prompt wastes context.
+- If a skill is written as generic advice, the model does not know when to trigger it.
+- If scripts and reference material have no boundaries, the skill becomes hard to reuse.
+- Mistaking Connector trust or a Skill declaration for authorization; neither can break through the Harness base permissions.
 
 ## The Problem
 
-The harness needs extensibility without allowing a growing skill catalog to consume context or bypass execution policy.
+The agent has basic tools (bash, read, write), a memory system, and an identity. But different tasks need different **operating guides**: committing code has commit conventions, code review has a review process, and deployment has a deployment checklist. If all of these are stuffed into the system prompt, the prompt bloats to an unacceptable size.
+
+You need a mechanism: **normally list only the skill catalog (name + when to use it), and load the full content only when it is needed.** Just like human knowledge: you know which books are in the library (the catalog), but you open a specific book only when you need it.
+
+WorkBuddy's Skills system solves this problem. Each skill is a directory containing a `SKILL.md` file. The head of `SKILL.md` has YAML frontmatter: title, summary, trigger conditions, and permission declarations. At startup the system scans only the frontmatter to build the index, without loading the full text. Only when the user's input matches a trigger condition is the corresponding skill's full content loaded into context; its tool calls must also pass both the Skill manifest and the Harness base permissions.
 
 ## The Solution
 
@@ -63,6 +74,8 @@ Skill storage:
     └── test-conventions/
         └── SKILL.md
 ```
+
+Loading flow:
 
 ```
 At startup:
@@ -91,9 +104,11 @@ When the user enters a request:
 
 ## How It Works
 
-> **Teaching boundary (current):** A production Skills system scans user-level `~/.workbuddy/skills` and project-level `{workspace}/.workbuddy/skills` for `*/SKILL.md`. **This teaching chapter currently** builds the index only from the in-memory `SEED_SKILLS` dict; `create_skill` / `approve` only mutate the in-memory skill index and `pending_skills`, which disappear when the process exits. Directory diagrams and `scanSkillDir` sketches below are the **production shape** — this teaching REPL **currently** does not read those directories (that does not permanently rule out a future on-disk loader).
+> **Teaching boundary (current):** A production Skills system scans user-level `~/.workbuddy/skills` and project-level `{workspace}/.workbuddy/skills` for `*/SKILL.md`. In **this teaching chapter**, `build_skill_index()` **currently** builds the index only from the in-memory `SEED_SKILLS` dict; `create_skill` / `approve` only mutate the in-memory skill index and `pending_skills`, which disappear when the process exits. Directory diagrams and `scanSkillDir` sketches below are the **production shape** — this teaching REPL **currently** does not read those directories (that does not permanently rule out a future on-disk loader).
 
 ### SKILL.md Structure
+
+Each skill's `SKILL.md` contains YAML frontmatter and a Markdown body:
 
 ```markdown
 ---
@@ -129,9 +144,13 @@ permissions:
 - Use Chinese for the commit message
 ```
 
+`permissions` is a requested capability, not a granted capability. The effective permissions are always:
+
 ```text
 Harness Base permissions ∩ currently approved Skill manifest
 ```
+
+Fields use a strict allowlist: unknown fields, absolute paths, `..` out-of-bounds paths, and wrong types are all rejected. `paths` only constrains tools that understand a structured `path` argument; multi-purpose tools such as `bash` still need the sandbox, approval, and egress control from s04/s23, and cannot get real isolation from string scanning.
 
 ### Frontmatter Parsing
 
@@ -166,6 +185,8 @@ def parse_skill_md(filepath: Path) -> dict | None:
 
 ### Index Building
 
+The teaching version builds the index from the in-memory `SEED_SKILLS` (only the production version scans disk directories); it parses frontmatter, and the body is already in memory:
+
 ```python
 def build_skill_index() -> list[dict]:
     """Build the index from SEED_SKILLS (teaching version).
@@ -189,6 +210,8 @@ def build_skill_index() -> list[dict]:
 
 ### Trigger Matching
 
+When the user enters input, check whether it matches a skill's `read_when`:
+
 ```python
 def match_skill(user_input: str) -> str | None:
     """Check whether user input matches a skill's trigger words.
@@ -206,6 +229,8 @@ def match_skill(user_input: str) -> str | None:
 ```
 
 ### On-Demand Loading
+
+When a skill matches, read the full SKILL.md content and inject it into the system prompt:
 
 ```python
 def load_skill(title: str) -> str:
@@ -225,6 +250,8 @@ def load_skill(title: str) -> str:
 ```
 
 ### The Skill Tool
+
+The model can also proactively call the `Skill` tool to load a skill:
 
 ```python
 def skill_tool(skill: str) -> str:
@@ -276,6 +303,8 @@ def create_skill(title: str, summary: str, read_when: list[str],
 
 ### Security Audit
 
+A security check is required before installing a new skill. WorkBuddy has P0/P1/P2 risk levels:
+
 ```python
 def audit_skill(
     skill_content: str,
@@ -303,6 +332,17 @@ def audit_skill(
     # P2: safe (permission merge / escalation lives in code.py; not expanded here)
     return ("P2", "Safe: no dangerous patterns")
 ```
+
+> ⚠️ **P0/P1/P2 string matching is only the first layer.** The SKILL-INJECT benchmark in the skills survey [*Agent Skill Evaluation and
+> Evolution*](https://arxiv.org/pdf/2606.11435) points out that malicious
+> skills have three more covert attack patterns, and pure pattern matching cannot stop any of them: **hidden override** (looks normal on the surface,
+> but quietly rewrites harness default behavior or safety rules), **disguised transfer** (disguises data exfiltration as a normal step),
+> and **remote steering** (fetches the real malicious instructions from outside only at runtime, which static scanning can never see). For a more complete
+> defense approach (declarative permissions + sandboxed trial runs + egress control), see
+> [`docs/skill-evolution-and-evaluation.md`](../docs/skill-evolution-and-evaluation.md)
+> and [`docs/security-boundaries.md`](../docs/security-boundaries.md).
+> For how to write a good skill itself, see datawhale's
+> [How to Write a Good Skill](https://github.com/datawhalechina/hello-agents/blob/main/Extra-Chapter/Extra08-%E5%A6%82%E4%BD%95%E5%86%99%E5%87%BA%E5%A5%BD%E7%9A%84Skill.md).
 
 ## Deferred Tool Loading (deferLoading)
 
