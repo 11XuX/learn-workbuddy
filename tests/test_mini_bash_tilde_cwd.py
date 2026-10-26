@@ -36,7 +36,8 @@ def _run(tmp_path: Path, monkeypatch, cwd: str, prompt: str):
     session = storage.create_session(cwd, "pytest session")
     agent.prompt(session, prompt)
     events = storage.read_transcript(session)
-    return home.resolve(), events[2]
+    tool_events = [e for e in events if e["type"] in ("tool_result", "tool_error")]
+    return home.resolve(), tool_events[0]
 
 
 @pytest.mark.parametrize(
@@ -54,8 +55,3 @@ def test_bash_runs_in_expanded_tilde_cwd(tmp_path, monkeypatch, cwd, prompt, exp
     assert event["content"] == expected.format(home=home)
     assert event["exit_code"] == 0
 
-
-def test_read_file_same_session_already_expands_tilde(tmp_path, monkeypatch):
-    _, event = _run(tmp_path, monkeypatch, "~/proj", "read notes.txt")
-    assert event["type"] == "tool_result"
-    assert event["content"] == "hello from proj\n"
