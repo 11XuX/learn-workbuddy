@@ -48,6 +48,16 @@ _TOOL_ENV_ALLOWLIST = (
 )
 
 
+def session_workspace(workspace: str | Path, *, strict: bool = False) -> Path:
+    """Return the resolved workspace path used by read_file, HOME and PWD.
+
+    Storage keeps the cwd string as entered (it may start with ``~``).  The
+    bash cwd shares the same ``expanduser`` step but is not resolved here.
+    """
+
+    return Path(workspace).expanduser().resolve(strict=strict)
+
+
 def build_subprocess_env(workspace: str | Path) -> dict[str, str]:
     """Return the small ambient environment exposed to a tool subprocess.
 
@@ -58,7 +68,7 @@ def build_subprocess_env(workspace: str | Path) -> dict[str, str]:
     network access remain governed by their own boundaries.
     """
 
-    workspace_path = Path(workspace).expanduser().resolve()
+    workspace_path = session_workspace(workspace)
     env = {
         name: os.environ[name]
         for name in _TOOL_ENV_ALLOWLIST
@@ -124,7 +134,9 @@ class ToolRegistry:
         try:
             completed = subprocess.run(
                 command,
-                cwd=session.cwd,
+                # expanduser only: path components stay with the OS, so a
+                # missing directory before ".." still fails as on main.
+                cwd=Path(session.cwd).expanduser(),
                 env=build_subprocess_env(session.cwd),
                 shell=True,
                 text=True, encoding="utf-8", errors="replace",
@@ -202,7 +214,7 @@ class ToolRegistry:
             raise PermissionError("command touches a protected path")
 
     def _resolve_session_path(self, path: str, session: SessionRecord) -> Path:
-        cwd = Path(session.cwd).expanduser().resolve(strict=True)
+        cwd = session_workspace(session.cwd, strict=True)
         candidate = Path(path).expanduser()
         if not candidate.is_absolute():
             candidate = cwd / candidate
