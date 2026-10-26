@@ -49,10 +49,10 @@ _TOOL_ENV_ALLOWLIST = (
 
 
 def session_workspace(workspace: str | Path, *, strict: bool = False) -> Path:
-    """Return the one workspace path shared by bash, read_file, HOME and PWD.
+    """Return the resolved workspace path used by read_file, HOME and PWD.
 
-    Storage keeps the cwd string as entered (it may start with ``~``); every
-    tool resolves it here so a session never has two workspace definitions.
+    Storage keeps the cwd string as entered (it may start with ``~``).  The
+    bash cwd shares the same ``expanduser`` step but is not resolved here.
     """
 
     return Path(workspace).expanduser().resolve(strict=strict)
@@ -131,12 +131,13 @@ class ToolRegistry:
         tool_call_id: str,
     ) -> ToolResult:
         self._check_command(command)
-        workspace = session_workspace(session.cwd)
         try:
             completed = subprocess.run(
                 command,
-                cwd=workspace,
-                env=build_subprocess_env(workspace),
+                # expanduser only: path components stay with the OS, so a
+                # missing directory before ".." still fails as on main.
+                cwd=Path(session.cwd).expanduser(),
+                env=build_subprocess_env(session.cwd),
                 shell=True,
                 text=True, encoding="utf-8", errors="replace",
                 capture_output=True,
