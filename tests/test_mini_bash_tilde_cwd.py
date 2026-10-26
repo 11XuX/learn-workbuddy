@@ -55,3 +55,19 @@ def test_bash_runs_in_expanded_tilde_cwd(tmp_path, monkeypatch, cwd, prompt, exp
     assert event["content"] == expected.format(home=home)
     assert event["exit_code"] == 0
 
+
+
+def test_bash_missing_component_before_dotdot(tmp_path, monkeypatch):
+    _, event = _run(
+        tmp_path, monkeypatch, "missing/../user/proj", "pwd"
+    )
+    assert event["type"] == "tool_error", event
+
+
+def test_read_file_keeps_tilde_cwd_expansion(tmp_path, monkeypatch):
+    _, event = _run(
+        tmp_path, monkeypatch, "~/proj", "read notes.txt"
+    )
+    assert event["type"] == "tool_result", event.get("error")
+    assert event["content"] == "hello from proj\n"
+    assert event["exit_code"] == 0
