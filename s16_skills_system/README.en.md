@@ -83,11 +83,17 @@ When the user enters a request:
   └─────────────────────────────────────────────────┘
 ```
 
+| Stage | What happens | Loaded amount |
+|------|-------|-------|
+| Index | Scan frontmatter and build the catalog | About 50 tokens per skill |
+| Match | Compare user input with trigger phrases | 0 tokens |
+| Load | Read the complete matching `SKILL.md` | About 500-5000 tokens per skill |
+
 ## How It Works
 
 > **Teaching boundary (current):** A production Skills system scans user-level `~/.workbuddy/skills` and project-level `{workspace}/.workbuddy/skills` for `*/SKILL.md`. **This teaching chapter currently** builds the index only from the in-memory `SEED_SKILLS` dict; `create_skill` / `approve` only mutate the in-memory skill index and `pending_skills`, which disappear when the process exits. Directory diagrams and `scanSkillDir` sketches below are the **production shape** — this teaching REPL **currently** does not read those directories (that does not permanently rule out a future on-disk loader).
 
-### Frontmatter Fields
+### SKILL.md Structure
 
 ```markdown
 ---
@@ -298,22 +304,16 @@ def audit_skill(
     return ("P2", "Safe: no dangerous patterns")
 ```
 
-**Try it**: no API key needed. Run the chapter REPL and type `/skill-gate-demo`. It calls the same `create_skill()` the model reaches through `TOOL_HANDLERS["SkillCreate"]`: a skill containing `curl` goes to pending approval and `match_skill` cannot trigger it; only after the demo plays the user's `approve` command does it match. One extra line each shows P2 created directly and P0 rejected without entering the pending queue. The demo's approve stands for the command a user types in the local terminal; the model's tool schema still has no approval field. Everything stays in memory and the skill index and pending queue are restored afterwards, so a following `skills` shows no `gate-demo-*`. A sample run is in the Chinese README (the demo prints Chinese status lines).
+## Deferred Tool Loading (deferLoading)
 
-```bash
-MODEL_ID=offline python3 s16_skills_system/code.py   # then type: /skill-gate-demo
-```
-
-## The Tool Schema Token Problem
-
-### Two-Step Loading
+### Problem: Token Explosion of Tool Schemas
 
 ```
 80+ tool definitions × ~500 tokens/tools = ~40,000 tokens
   (consume context whether or not they are used)
 ```
 
-### Teaching Implementation: CLI Bundle
+### Solution: Two-Step Loading Pattern
 
 ```
 Traditional approach: load everything at startup
@@ -332,7 +332,7 @@ WorkBuddy approach: load on demand (deferLoading)
     └─ validate parameters, then execute
 ```
 
-### Key Clean-Room Pattern
+### Teaching Implementation (CLI bundle)
 
 ```javascript
 // Check the deferLoading flag when registering a tool
@@ -354,9 +354,17 @@ for (let tool of tools) {
 // 4. system loads the full schema, validates parameters, and executes
 ```
 
-### Deferred Tools in WorkBuddy
+### Key Patterns in the Clean-Room Comparison
 
-### Three Skill Storage Levels
+| Component | Purpose | Observed references |
+|------|------|------|
+| `deferLoading` | Marks a tool for deferred loading | On tool definitions |
+| `indexDeferredTool()` | Creates a lightweight index entry | Called during registration |
+| `ToolSearch` | Keyword search | 17 references |
+| `DeferExecuteTool` | Loads the schema and executes a deferred tool | 12 references |
+| `getToolDescriptionFromProduct()` | Gets the full description on demand | Called before execution |
+
+### Deferred Tools in WorkBuddy
 
 ```
 Deferred tools (loaded only when used):
@@ -370,7 +378,7 @@ Deferred tools (loaded only when used):
   - mcp__weixinpay: WeChat Pay MCP
 ```
 
-## Skill Directory Layout
+## Three-Level Skills Architecture
 
 (**Production shape**; this teaching REPL currently does not read these directories.)
 
@@ -399,9 +407,7 @@ Deferred tools (loaded only when used):
 └─────────────────────────────────────────────┘
 ```
 
-### WorkBuddy Architecture Comparison
-
-This comparison maps skill discovery, frontmatter catalogs, deferred loading, and auditing to the corresponding WorkBuddy-style harness boundary.
+### Skill Directory Structure
 
 ```
 my-skill/
@@ -416,9 +422,7 @@ my-skill/
 
 ## WorkBuddy Architecture Comparison
 
-This comparison maps skill discovery, frontmatter catalogs, deferred loading, and auditing to the corresponding WorkBuddy-style harness boundary.
-
-### Frontmatter Fields
+### Two-Level Storage
 
 (**Production shape**; this teaching REPL currently indexes `SEED_SKILLS` and does not scan disk.)
 
@@ -431,7 +435,7 @@ This comparison maps skill discovery, frontmatter catalogs, deferred loading, an
   api-design/SKILL.md
 ```
 
-### Loading Flow
+### Frontmatter Fields
 
 ```yaml
 ---
@@ -450,7 +454,7 @@ permissions:                 # minimum capabilities requested by the Skill
 ---
 ```
 
-### Security Audit
+### Loading Flow
 
 (The `scanSkillDir` calls below are the **production shape**; this teaching REPL currently does not read those directories — the index comes from `SEED_SKILLS`.)
 
@@ -495,6 +499,14 @@ const SkillTool = {
 };
 ```
 
+### Security Audit
+
+| Risk level | Meaning | Handling |
+|------|------|------|
+| P0 | Contains dangerous operations such as `rm -rf`, `sudo`, or `eval` | Reject installation |
+| P1 | Contains network or installation operations such as `curl` or `npm install` | Ask the user |
+| P2 | No detected dangerous pattern | Install directly |
+
 ### Automatic Skill Saving
 
 A WorkBuddy design principle: **after a multi-step task, capture the workflow as a skill**. In this chapter the model proposes the save through `SkillCreate`, and every write is audited first.
@@ -510,7 +522,11 @@ A WorkBuddy design principle: **after a multi-step task, capture the workflow as
 
 This is a single-process, in-memory simplification: pending items vanish when the process exits. A real harness persists pending items and asks the user to confirm through a UI.
 
-### Code Walkthrough
+**Try it**: no API key needed. Run the chapter REPL and type `/skill-gate-demo`. It calls the same `create_skill()` the model reaches through `TOOL_HANDLERS["SkillCreate"]`: a skill containing `curl` goes to pending approval and `match_skill` cannot trigger it; only after the demo plays the user's `approve` command does it match. One extra line each shows P2 created directly and P0 rejected without entering the pending queue. The demo's approve stands for the command a user types in the local terminal; the model's tool schema still has no approval field. Everything stays in memory and the skill index and pending queue are restored afterwards, so a following `skills` shows no `gate-demo-*`. A sample run is in the Chinese README (the demo prints Chinese status lines).
+
+```bash
+MODEL_ID=offline python3 s16_skills_system/code.py   # then type: /skill-gate-demo
+```
 
 ## Code Walkthrough
 
@@ -532,28 +548,6 @@ python -m pytest -q tests/test_skill_permissions.py
 ## Next Lesson
 
 - A skill combines frontmatter, instructions, optional scripts, and explicit permissions. Indexing stays small; full content is loaded on demand.
-
-**Reference tables**
-
-| Stage | What happens | Loaded amount |
-|------|-------|-------|
-| Index | Scan frontmatter and build the catalog | About 50 tokens per skill |
-| Match | Compare user input with trigger phrases | 0 tokens |
-| Load | Read the complete matching `SKILL.md` | About 500-5000 tokens per skill |
-
-| Component | Purpose | Observed references |
-|------|------|------|
-| `deferLoading` | Marks a tool for deferred loading | On tool definitions |
-| `indexDeferredTool()` | Creates a lightweight index entry | Called during registration |
-| `ToolSearch` | Keyword search | 17 references |
-| `DeferExecuteTool` | Loads the schema and executes a deferred tool | 12 references |
-| `getToolDescriptionFromProduct()` | Gets the full description on demand | Called before execution |
-
-| Risk level | Meaning | Handling |
-|------|------|------|
-| P0 | Contains dangerous operations such as `rm -rf`, `sudo`, or `eval` | Reject installation |
-| P1 | Contains network or installation operations such as `curl` or `npm install` | Ask the user |
-| P2 | No detected dangerous pattern | Install directly |
 
 The original Chinese README remains the primary-language reference. This English companion keeps the same code, diagrams, local paths, and chapter structure so readers can switch languages without losing runnable details.
 
