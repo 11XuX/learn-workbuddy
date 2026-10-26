@@ -368,7 +368,7 @@ def read_artifact(self, artifact: ArtifactReference, offset: int = 0, limit: int
 
 ## OS Analogy: Virtual Memory Paging
 
-This comparison maps large-output artifacts, context pointers, and retention to the corresponding WorkBuddy-style harness boundary.
+This is not a metaphor: it is virtual memory paging, applied to LLM context management.
 
 | OS concept | WorkBuddy equivalent | Explanation |
 |---------|---------------------|------|
@@ -383,7 +383,11 @@ This comparison maps large-output artifacts, context pointers, and retention to 
 | Filesystem | Three-layer memory system | Remote -> user -> workspace |
 | Replay limit | Replay at most 1000 events | Prevent history from exhausting memory |
 
+**In one sentence**: context is RAM, disk is swap, and Read is the page fault handler.
+
 ## Three-Layer Defense Framework
+
+Context management is a three-layer defense system, and this chapter is **Layer 1 (entry control)**:
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -410,7 +414,17 @@ This comparison maps large-output artifacts, context pointers, and retention to 
 └─────────────────────────────────────────────────────────┘
 ```
 
+**Layer 1 has the highest priority**, because it intercepts data before it enters context, so its ROI is the highest. Saving 50MB with a single grep command is far easier than compacting 50MB of context that is already there.
+
 ## Why This Comes Before Smart Memory
+
+> *"When reproducing the system, this layer takes priority over 'smart memory', because it directly determines whether long tasks can keep running"*
+
+Four reasons:
+
+**1. It directly determines whether long tasks can keep running**
+
+Smart memory (s14-s16) solves the problem of "what to remember". Output externalization solves the problem of "whether the agent can keep running". If an agent cannot even survive its second turn (because the first grep command blew up the context), even the smartest memory system is useless.
 
 ```
 Without output externalization:
@@ -424,11 +438,23 @@ With output externalization:
   Turn 50: Context is still not full → task completes ✅
 ```
 
+**2. It is the first line of defense: it keeps context from filling up**
+
+Compaction (s18) is treatment: it triggers only after context is already full. Externalization is prevention: large output never enters context in the first place. Prevention is always cheaper than treatment.
+
+**3. It is much simpler to implement than AI-driven memory selection**
+
+memorySelector (s16) has to call a lite model to judge relevance, which involves model calls, prompt engineering, and JSON parsing. Output externalization only needs a length check plus a file write: pure logic, zero model calls.
+
+**4. The ROI is immediate**
+
+A single grep command can save 50MB of context. The implementation takes only a few dozen lines of code. No context management strategy has a higher ROI than this.
+
 ## WorkBuddy Architecture Comparison
 
-This comparison maps large-output artifacts, context pointers, and retention to the corresponding WorkBuddy-style harness boundary.
-
 ### Environment Variables and Thresholds
+
+Output externalization in a production desktop agent is controlled by two environment variables:
 
 ```bash
 # Bash output exceeds this length → write to disk, keep head+tail in context
@@ -448,7 +474,11 @@ CODEBUDDY_TOOL_RESULT_THRESHOLD_KB=50
     └── ...
 ```
 
+Each externalization writes one file with an incrementing number. The file path is recorded in the `tool_result` in context, and the agent can read it on demand through the Read tool.
+
 ### Head + Tail Strategy for Bash Output
+
+The Bash tool's externalization keeps head 6KB + tail 24KB, instead of simply truncating to the first 30KB:
 
 ```javascript
 // Bash output handling in the agent bridge (simplified)
@@ -466,7 +496,15 @@ if (output.length > BASH_MAX_OUTPUT_LENGTH) {
 }
 ```
 
+Why head + tail? Because the key information in command output is not evenly distributed:
+- **head**: the command itself, environment information, and the initial results
+- **tail**: error summaries, statistics, exit status, and final conclusions
+
+The middle is usually a large amount of repetitive data (for example, thousands of log lines), and omitting it does not affect the agent's understanding of the whole.
+
 ### Placeholder Strategy for Non-Bash Tools
+
+When a non-Bash tool result (for example, an MCP tool returning a large amount of structured data) exceeds 50KB, context keeps only a placeholder + preview + file path:
 
 ```javascript
 // non-Bash tool result handling (simplified)
@@ -482,9 +520,57 @@ if (resultSize > CODEBUDDY_TOOL_RESULT_THRESHOLD_KB * 1024) {
 
 ### Working with Background Tasks
 
-Use these exercises to change one part of large-output artifacts, context pointers, and retention at a time and explain the resulting contract.
+After a Bash command's output has been externalized, if the command is still running in the background (`run_in_background=true`), the externalized file keeps being appended to. The agent can read the latest content on demand through the `TaskOutput` tool, which is also a form of "demand paging".
 
 ## Code Walkthrough
+
+`code.py` implements the complete output externalization mechanism:
+
+1. **`ToolResultExternalizer`** — the core class
+   - `should_externalize(output, tool_name)` — decides whether externalization is needed (Bash: 30000 chars, others: 50KB)
+   - `write_to_disk(output)` — exclusively creates and fsyncs `tool-results/tool_result_NNN.txt`, without overwriting older evidence
+   - `summarize(output, tool_name)` — generates a bounded, deterministic essential summary without a key
+   - `make_pointer(output, artifact)` — generates provenance + head 6KB + tail 24KB + a path pointer
+   - `read_artifact(artifact, offset, limit)` — reads from disk on demand after verifying directory ownership and SHA-256
+
+2. **`ArtifactReference` / `ArtifactMemoryReference`** — the reference contract
+   - `ArtifactReference` records the path, summary, source tool, stable source, size, and SHA-256, without holding the body
+   - `for_memory()` further generates a slim reference; it has no `content` field and does not copy the preview from the pointer
+   - The read path is restricted to the current session's `tool-results/`, so a pointer cannot become an arbitrary file-read entry point
+
+3. **`ArtifactRetentionClaim` / `ArtifactCleanupPolicy`** — reference leases and cleanup policy
+   - A claim carries only a typed source ID, the full digest, a reference count, and an optional expiry time; it does not accept Memory paths
+   - The policy explicitly controls orphan TTL, the maximum number of deletions, and dry-run
+
+4. **`ArtifactRetentionJournal` / `ArtifactLeaseRecovery`** — a crash-recoverable lease owner
+   - `prepared → committed → released` expresses successful publication and release; `prepared → aborted` is allowed only when it is confirmed that the lease was not published and will not be committed again
+   - sequence + hash chain checks complete records; only a crash tail without a trailing newline is discarded
+   - A fresh instance folds the journal; a pending prepare keeps protecting evidence by default
+
+5. **`ArtifactReferenceOwner` / `ArtifactReconciliationReport`** — generation-fenced Memory reconciliation
+   - Under the owner fence, it checks the stable transaction ID, source ID, full digest, and generation
+   - Missing references are first sealed and then aborted; unknown, conflict, and stale all stay pending
+   - Terminal retries and concurrent reconcilers are idempotent, and the report does not expose paths or Memory bodies
+
+6. **`ArtifactCleanupPlan` / `ArtifactCleanupReport`** — two-phase, auditable cleanup
+   - The plan freezes a file snapshot and explains every retain/delete decision, without performing any writes
+   - The journal-aware apply restores claims and re-verifies identity and digest within the same exclusive lock
+
+7. **`MockLLM`** — simulates LLM behavior
+   - Generates tool calls according to a preset script
+   - When it sees an externalization pointer, decides whether to trigger a "page fault" (call Read to read the full output)
+
+8. **Agent loop** — integrates externalization
+   - After a tool runs, checks whether externalization is needed
+   - If so, writes the artifact + generates a structured reference + replaces the context content
+   - Prints an `[externalize]` log showing the savings
+
+9. **Demo scenario** — a complete demonstration
+   - Simulates a grep command that produces 1.3MB of output
+   - Shows the context size before and after externalization
+   - Simulates the page fault when the agent needs the full output
+
+After running it, you will see logs like:
 
 ```
 [externalize] tool_result_001.txt written, 1.3MB → 2KB in context (saved 99.8%)
@@ -497,13 +583,21 @@ Use these exercises to change one part of large-output artifacts, context pointe
 python s13_output_externalization/code.py
 ```
 
+The code uses a mock LLM, so no API key is needed. When run, it automatically demonstrates:
+1. A large-output command triggering externalization
+2. Context growing by only ~30KB (instead of 1.3MB)
+3. The agent triggering a page fault when it needs the full output
+4. Reading specific line ranges from disk
+
 ## Exercises
 
 Use these exercises to change one part of large-output artifacts, context pointers, and retention at a time and explain the resulting contract.
 
 ## Next Lesson
 
-- Large tool results become immutable artifacts. The prompt keeps a bounded preview, digest, provenance, and a readable pointer.
+Entry control (this chapter) keeps large output out of context. But the conversation itself keeps getting longer: even if every tool result is externalized, the message history of 50 conversation turns will still fill the context window. What happens when context is full? s14 covers context compaction: a four-layer compaction pipeline.
+
+s14 Context Compact → four-layer compaction pipeline, keep the newest, drop the oldest, retain a summary.
 
 The original Chinese README remains the primary-language reference. This English companion keeps the same code, diagrams, local paths, and chapter structure so readers can switch languages without losing runnable details.
 
