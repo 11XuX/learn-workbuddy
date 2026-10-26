@@ -71,3 +71,38 @@ def test_read_file_keeps_tilde_cwd_expansion(tmp_path, monkeypatch):
     assert event["type"] == "tool_result", event.get("error")
     assert event["content"] == "hello from proj\n"
     assert event["exit_code"] == 0
+
+
+@pytest.mark.parametrize(
+    "cwd_kind", ["tilde", "relative", "absolute", "dot"]
+)
+def test_bash_cwd_matches_home_and_pwd(tmp_path, monkeypatch, cwd_kind):
+    cwd = {
+        "tilde": "~/proj",
+        "relative": "user/proj",
+        "absolute": str(tmp_path / "user" / "proj"),
+        "dot": ".",
+    }[cwd_kind]
+    home, event = _run(
+        tmp_path,
+        monkeypatch,
+        cwd,
+        """bash printf '%s\\n' "$PWD" "$HOME"; pwd -P""",
+    )
+    expected = tmp_path.resolve() if cwd_kind == "dot" else home / "proj"
+    assert event["type"] == "tool_result", event.get("error")
+    assert event["exit_code"] == 0
+    assert event["content"] == f"{expected}\n" * 3
+
+
+def test_bash_invalid_tilde_cwd_does_not_write(tmp_path, monkeypatch):
+    _, event = _run(
+        tmp_path,
+        monkeypatch,
+        "~/missing/../proj",
+        "bash printf changed > notes.txt",
+    )
+    assert event["type"] == "tool_error", event
+    assert (tmp_path / "user" / "proj" / "notes.txt").read_text(
+        encoding="utf-8"
+    ) == "hello from proj\n"
