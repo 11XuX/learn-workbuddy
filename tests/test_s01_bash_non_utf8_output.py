@@ -36,6 +36,8 @@ def test_non_utf8_bash_output_is_fed_back(monkeypatch, tmp_path, command) -> Non
 
     assert result.stop_reason is s01.LoopStopReason.FINAL_ANSWER
     assert result.tool_calls == 1
+    # Each tool_use must be answered by a tool_result turn, not swallowed.
+    assert [m["role"] for m in messages] == ["user", "assistant", "user", "assistant"]
     tool_result = messages[2]["content"][0]
     assert tool_result["tool_use_id"] == "call_1"
     assert isinstance(tool_result["content"], str) and tool_result["content"]
