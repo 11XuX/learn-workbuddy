@@ -187,7 +187,7 @@ def run_bash(command: str) -> str:
             shell=True,
             cwd=os.getcwd(),
             capture_output=True,
-            text=True,
+            encoding="utf-8", errors="replace",
             timeout=120,
         )
         output = (completed.stdout + completed.stderr).strip()
