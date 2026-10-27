@@ -23,15 +23,7 @@ flowchart LR
     Runtime -. "status + transcript" .-> Store
 ```
 
-## Learning Goals
-
-By the end of the lesson, you should be able to model session ownership, lifecycle transitions, transcript scope, and clean shutdown.
-
-## Four Lifecycle Operations
-
-Create, attach, close, and abort are explicit session transitions with predictable ownership and cleanup behavior.
-
-## Create: Identity and First Runtime
+## What s07 Adds on Top of s06
 
 `SessionRecord` is the durable identity. `SessionProcess` is a runtime
 generation that can be rebuilt later.
@@ -41,7 +33,15 @@ generation that can be rebuilt later.
 | `SessionRecord` | Can survive across runtimes | Session ID, cwd, mode, backend, transcript, generation | Threads, ports, HTTP server, locks, provider client |
 | `SessionProcess` | One runtime generation | HTTP listener, threads, abort signal, turn lock, execution entry point | Cross-session memory or permanent identity |
 
-### Close: Release Runtime, Keep History
+## Learning Goals
+
+By the end of the lesson, you should be able to model session ownership, lifecycle transitions, transcript scope, and clean shutdown.
+
+## Four Lifecycle Operations
+
+Create, attach, close, and abort are explicit session transitions with predictable ownership and cleanup behavior.
+
+### Create: Create the Identity and the First Runtime
 
 ```text
 validate request
@@ -55,16 +55,9 @@ start SessionProcess
 publish idle
 ```
 
-### Resume: Rebuild Runtime
+### Close: Release the Runtime, Keep the Session History
 
-| Operation | Keeps session ID | Keeps transcript | Keeps runtime | Can resume |
-|---|---:|---:|---:|---:|
-| create | Yes | Creates an empty record | Yes | Not applicable |
-| close | Yes | Yes | No | Yes |
-| resume | Yes | Yes | Creates a new runtime | Yes |
-| forget | No | No | No | No |
-
-### Forget: Explicit Deletion
+### Resume: Create a New Runtime with the Old Identity
 
 ```text
 SessionRecord(session_id=sess_0001, generation=1, closed)
@@ -74,7 +67,16 @@ SessionRecord(session_id=sess_0001, generation=1, closed)
 SessionProcess(session_id=sess_0001, generation=2, new runtime)
 ```
 
-### State Machine
+### Forget: Explicitly Delete the Logical Session
+
+| Operation | Keeps session ID | Keeps transcript | Keeps runtime | Can resume |
+|---|---:|---:|---:|---:|
+| create | Yes | Creates an empty record | Yes | Not applicable |
+| close | Yes | Yes | No | Yes |
+| resume | Yes | Yes | Creates a new runtime | Yes |
+| forget | No | No | No | No |
+
+## State Machine
 
 | State | Meaning | Main allowed next states |
 |---|---|---|
@@ -98,18 +100,9 @@ A session transcript preserves what happened in one interaction; it does not aut
 | Lifetime | May remain after close; deleted by forget | Should not disappear when one session closes |
 | Main risk | Context growth and protocol integrity | Relevance, staleness, contamination, scope leakage |
 
-| Feature | PTY | Pipe |
-|---|---|---|
-| Terminal semantics | Has a TTY; supports colors, cursor, and window size | Ordinary stdin/stdout/stderr |
-| Signal behavior | Closer to an interactive terminal | Needs explicit process signals and protocol control |
-| Suitable for | REPLs, interactive CLIs, and terminal UIs | Non-interactive tools and structured output |
-| Recovery | Create a new PTY and worker | Create new pipes and a worker |
-
-## Why InMemorySessionStore Is Enough for the Lesson
+## Why Only InMemorySessionStore Is Provided
 
 An in-memory store keeps the lifecycle contract easy to inspect while later chapters introduce durable persistence separately.
-
-## ACP-Like HTTP Boundary
 
 ```python
 store = InMemorySessionStore()
@@ -122,7 +115,7 @@ manager_v2 = SessionManager(store)
 manager_v2.resume_session(sid)  # same ID, new generation
 ```
 
-## PTY and Pipe at Runtime
+## ACP-Like HTTP Boundary
 
 ```text
 POST /agent/send      send a non-empty user message
@@ -131,7 +124,16 @@ POST /agent/abort     request cooperative interruption
 GET  /agent/messages  read a JSON-safe transcript view
 ```
 
-## Close and Abort
+## PTY and Pipe Belong to Runtime Configuration
+
+| Feature | PTY | Pipe |
+|---|---|---|
+| Terminal semantics | Has a TTY; supports colors, cursor, and window size | Ordinary stdin/stdout/stderr |
+| Signal behavior | Closer to an interactive terminal | Needs explicit process signals and protocol control |
+| Suitable for | REPLs, interactive CLIs, and terminal UIs | Non-interactive tools and structured output |
+| Recovery | Create a new PTY and worker | Create new pipes and a worker |
+
+## Close and Abort Are Different
 
 Close represents normal cleanup, while abort records an interrupted run and releases the same process and transport resources.
 
@@ -139,7 +141,7 @@ Close represents normal cleanup, while abort records an interrupted run and rele
 
 Follow a session from creation through attachment, request handling, close, and abort, then inspect the state left behind.
 
-## Code Walkthrough
+### `SessionRecord`
 
 ### `InMemorySessionStore`
 
@@ -147,13 +149,11 @@ Follow a session from creation through attachment, request handling, close, and 
 
 ### `SessionManager`
 
-### Design Questions
+## Test Coverage
 
 ## Run
 
 Run the local session example to observe lifecycle events and the boundary between a live session and its transcript.
-
-## Run
 
 ```bash
 python3 s07_session_management/code.py --demo
