@@ -5,13 +5,18 @@
 >
 > **Harness layer: user profile projection and preference boundaries.**
 
-User memory separates canonical append-only events from the current profile and preference projections injected into prompts.
+---
 
 ![Chapter diagram 1](./images/user-memory-en.svg)
 
 ## What This Lesson Adds
 
 This lesson adds user-scoped preferences and identity facts while keeping them separate from project-owned memory.
+
+| Type | Question answered | Update method | Example |
+|---|---|---|---|
+| Profile | "Who is this user?" | Explicit field patch | `name`, `call_them`, `timezone` |
+| Preference | "What is the cross-project default?" | Create, replace, or delete by stable key | `response.language=Chinese` |
 
 ## Learning Goals
 
@@ -53,6 +58,16 @@ flowchart LR
 ```
 
 ### Canonical State and Projection
+
+| File | Role | Source of truth? |
+|---|---|---|
+| `profile.json` | Structured user profile | Yes |
+| `preferences.json` | Complete keyed preference set with revision, expiry, and source event; includes deletion tombstones, never deleted content | Yes, including expired records |
+| `persona/user.md` | Human-readable profile projection | No; rebuildable |
+| `MEMORY.md` | Preference projection for inspection and prompt injection | No; rebuildable |
+| `persona/core.md` | Assistant values and boundaries | Independent assistant identity |
+| `persona/identity.md` | Assistant name, type, and emoji | Independent assistant identity |
+| `persona/bootstrap.md` | One-time onboarding instructions | Deleted after completion |
 
 ## Main Code Paths
 
@@ -157,7 +172,13 @@ User memory should contain stable preferences and identity facts, not transient 
 
 User memory follows the person across projects, workspace memory belongs to one project, and remote memory remains a scoped retrieval boundary.
 
-## Append-Only Recovery
+| Layer | Owner | Content | Typical read time |
+|---|---|---|---|
+| s10 Workspace Memory | Workspace | Project decisions, conventions, pitfalls | When entering the project |
+| s11 User Memory | User | Stable profile and explicit cross-project preferences | At session startup |
+| s12 Remote Recall | Remote account/service | Long-term history candidates and remote profile | When the query needs it |
+
+## Atomic Writes and Restart Recovery
 
 ```text
 validate -> serialize -> write temp file -> fsync -> os.replace
@@ -195,29 +216,6 @@ python s11_user_memory/code.py
 ## Next Lesson
 
 - User memory separates canonical append-only events from the current profile and preference projections injected into prompts.
-
-**Reference tables**
-
-| Type | Question answered | Update method | Example |
-|---|---|---|---|
-| Profile | "Who is this user?" | Explicit field patch | `name`, `call_them`, `timezone` |
-| Preference | "What is the cross-project default?" | Create, replace, or delete by stable key | `response.language=Chinese` |
-
-| File | Role | Source of truth? |
-|---|---|---|
-| `profile.json` | Structured user profile | Yes |
-| `preferences.json` | Complete keyed preference set with revision, expiry, and source event; includes deletion tombstones, never deleted content | Yes, including expired records |
-| `persona/user.md` | Human-readable profile projection | No; rebuildable |
-| `MEMORY.md` | Preference projection for inspection and prompt injection | No; rebuildable |
-| `persona/core.md` | Assistant values and boundaries | Independent assistant identity |
-| `persona/identity.md` | Assistant name, type, and emoji | Independent assistant identity |
-| `persona/bootstrap.md` | One-time onboarding instructions | Deleted after completion |
-
-| Layer | Owner | Content | Typical read time |
-|---|---|---|---|
-| s10 Workspace Memory | Workspace | Project decisions, conventions, pitfalls | When entering the project |
-| s11 User Memory | User | Stable profile and explicit cross-project preferences | At session startup |
-| s12 Remote Recall | Remote account/service | Long-term history candidates and remote profile | When the query needs it |
 
 The original Chinese README remains the primary-language reference. This English companion keeps the same code, diagrams, local paths, and chapter structure so readers can switch languages without losing runnable details.
 
