@@ -49,3 +49,36 @@ def test_utf8_bash_output_still_works(monkeypatch, tmp_path) -> None:
     s01 = load_s01(monkeypatch)
 
     assert s01.run_bash("cat notes.txt") == "中文笔记"
+
+
+def test_non_utf8_stderr_is_fed_back(monkeypatch, tmp_path) -> None:
+    (tmp_path / "stderr.bin").write_bytes(b"\xffstderr-marker\n")
+    monkeypatch.chdir(tmp_path)
+    s01 = load_s01(monkeypatch)
+    s01.client = fake_client(
+        response(
+            tool_block(
+                "call_stderr",
+                "printf 'stdout-marker\\n'; cat stderr.bin >&2",
+            ),
+            stop_reason="tool_use",
+        ),
+        response(text_block("done"), stop_reason="end_turn"),
+    )
+    messages = [{"role": "user", "content": "show both output streams"}]
+
+    result = s01.agent_loop(messages, max_turns=3)
+
+    assert result.stop_reason is s01.LoopStopReason.FINAL_ANSWER
+    assert result.tool_calls == 1
+    assert [m["role"] for m in messages] == [
+        "user", "assistant", "user", "assistant",
+    ]
+    tool_result = messages[2]["content"][0]
+    assert tool_result["type"] == "tool_result"
+    assert tool_result["tool_use_id"] == "call_stderr"
+    content = tool_result["content"]
+    assert isinstance(content, str) and content
+    assert "stdout-marker" in content
+    assert "stderr-marker" in content
+    assert content.index("stdout-marker") < content.index("stderr-marker")
