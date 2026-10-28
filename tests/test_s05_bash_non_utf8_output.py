@@ -61,6 +61,9 @@ def test_main_answers_and_stays_alive(monkeypatch, tmp_path, name, data) -> None
     except queue.Empty:
         pytest.fail(f"Main never answered agent/message (alive={main.is_alive()})")
     assert reply == {"type": "result", "data": "done"}
+    # The bash output must reach the model as a non-empty tool_result.
+    fed = client.messages.calls[1]["messages"][2]["content"]
+    assert [(r["tool_use_id"], bool(r["content"])) for r in fed] == [("call_1", True)]
     # Main must still serve the renderer after the tool call.
     to_main.put({"type": "ping"})
     assert to_renderer.get(timeout=5)["type"] == "pong"
