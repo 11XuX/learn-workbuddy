@@ -67,9 +67,23 @@ The harness must extend its tool surface without giving an external connector an
            └──────────────────────────────────────┘
 ```
 
+| Stage | Meaning | Tool visibility |
+|---|---|-----------|
+| configured | Configuration written to `mcp.json` | Not visible |
+| disconnected | Process is not running | Not visible |
+| trusted | User has trusted it; process is waiting to start | Not visible |
+| connected | Process started and `tools/list` completed | Only declared tools are visible, with deferred loading |
+
+| Method | Direction | Purpose |
+|------|------|------|
+| `tools/list` | client -> server | Discover available tools |
+| `tools/call` | client -> server | Call a tool |
+| `resources/list` | client -> server | List available resources |
+| `resources/read` | client -> server | Read a resource |
+
 ## How It Works
 
-### Tool Discovery
+### Connector Configuration
 
 ```json
 {
@@ -88,7 +102,7 @@ The harness must extend its tool surface without giving an external connector an
 }
 ```
 
-### Deferred Tool Loading
+### Trust Model
 
 ```python
 TRUST_FILE = Path.home() / ".workbuddy" / "connector_trust.json"
@@ -113,7 +127,7 @@ grant = MCPPermissionGrant(
 manager = ConnectorManager(MCP_CONFIG, grant)
 ```
 
-### Connector State in Context
+### Tool Discovery
 
 ```python
 def discover_tools(connector_name: str) -> list[dict]:
@@ -135,9 +149,7 @@ def discover_tools(connector_name: str) -> list[dict]:
     return discovered
 ```
 
-### WorkBuddy Architecture Comparison
-
-This comparison maps connector configuration, trust, tool discovery, and deferred execution to the corresponding WorkBuddy-style harness boundary.
+### Deferred Tool Loading (Deferred Tools)
 
 ```python
 # tell the agent in the system prompt only which deferred tools are available
@@ -156,7 +168,7 @@ schema = tool_search("mcp__github__create_pr")  # check the Skill grant again
 result = defer_execute_tool("mcp__github__create_pr", {"title": "...", "body": "..."})  # check again
 ```
 
-### Configuration Files
+### Connector State Injection
 
 ```python
 def build_connector_context() -> str:
@@ -174,9 +186,7 @@ def build_connector_context() -> str:
 
 ## WorkBuddy Architecture Comparison
 
-This comparison maps connector configuration, trust, tool discovery, and deferred execution to the corresponding WorkBuddy-style harness boundary.
-
-### Trust Flow
+### Configuration Files
 
 ```json
 {
@@ -190,13 +200,23 @@ This comparison maps connector configuration, trust, tool discovery, and deferre
 }
 ```
 
+### Connector Management
+
+### Trust Model Implementation
+
 ### Deferred Tool Loading
 
 ### Connector Ecosystem
 
-### Code Walkthrough
-
-### Run
+| Connector | Capability |
+|--------|------|
+| `tencent-docs` | Read and write Tencent Docs |
+| `github` | GitHub PR and issue operations |
+| `feishu` | Feishu messages and documents |
+| `notion` | Notion page management |
+| `dingtalk` | DingTalk messages and approvals |
+| `wecom` | WeCom messages |
+| `ardot` | AR design-tool integration |
 
 ## Code Walkthrough
 
@@ -225,32 +245,6 @@ Use these exercises to change one part of connector configuration, trust, tool d
 ## Next Lesson
 
 - The lesson models configured, trusted, connected, and deferred MCP tools with namespacing and fail-closed permission checks.
-
-**Reference tables**
-
-| Stage | Meaning | Tool visibility |
-|---|---|-----------|
-| configured | Configuration written to `mcp.json` | Not visible |
-| disconnected | Process is not running | Not visible |
-| trusted | User has trusted it; process is waiting to start | Not visible |
-| connected | Process started and `tools/list` completed | Only declared tools are visible, with deferred loading |
-
-| Method | Direction | Purpose |
-|------|------|------|
-| `tools/list` | client -> server | Discover available tools |
-| `tools/call` | client -> server | Call a tool |
-| `resources/list` | client -> server | List available resources |
-| `resources/read` | client -> server | Read a resource |
-
-| Connector | Capability |
-|--------|------|
-| `tencent-docs` | Read and write Tencent Docs |
-| `github` | GitHub PR and issue operations |
-| `feishu` | Feishu messages and documents |
-| `notion` | Notion page management |
-| `dingtalk` | DingTalk messages and approvals |
-| `wecom` | WeCom messages |
-| `ardot` | AR design-tool integration |
 
 The original Chinese README remains the primary-language reference. This English companion keeps the same code, diagrams, local paths, and chapter structure so readers can switch languages without losing runnable details.
 
