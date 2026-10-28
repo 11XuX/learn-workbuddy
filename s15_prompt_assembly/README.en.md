@@ -44,6 +44,11 @@ flowchart LR
 
 ## s12 and s15 Responsibilities
 
+| Chapter | Owns | Does not own |
+|---|---|---|
+| S12 Remote Memory | Query normalization, candidate generation, score breakdown, stable ranking, scope, and provenance | The final decision about which hits enter the prompt |
+| S15 Prompt Assembly | Scope/confidence gates, authority, deduplication, conflicts, top-k, budgets, and prompt assembly | Retrieval scoring or long-term memory writes |
+
 s12 produces scoped recall candidates; s15 decides which candidates are authoritative, deduplicated, and affordable to place in the prompt.
 
 ## Memory Selection Contract
@@ -72,7 +77,13 @@ plan = select_memory_context(
 
 ### `MemoryContextPlan`
 
-## Authority Beats Recency
+## Three Preference Authority Levels, Not Three Score Weights
+
+| Authority | Meaning | Example |
+|---|---|---|
+| `current_turn` | Explicit requirement for the current task | "Use Go for this implementation" |
+| `workspace_override` | Local convention of the current project | "This repository uses TypeScript for automation" |
+| `user_default` | Cross-project personal default | "I usually prefer Python" |
 
 ```text
 current_turn > workspace_override > user_default
@@ -82,7 +93,15 @@ current_turn > workspace_override > user_default
 authority desc → score desc → source_rank asc → captured_at desc → memory_id asc
 ```
 
-### Authority Is a Harness Requirement
+### Authority Is Not Harness Required
+
+`current_turn` is the highest level among preference candidates, but it is still not a system safety rule. Base instructions, tool boundaries, and Working mode continue to be carried by required `PromptSegment`s:
+
+- authority only decides, among candidates, who wins and who uses the Memory budget first;
+- required segments reserve the total Prompt budget first, and no preference can override or squeeze them out;
+- when the required segments themselves do not fit, `PromptBudgetError` is raised; safety rules are never downgraded to optional preferences.
+
+The current-turn user message is still passed to the model through conversation messages; the `current_turn` candidate is its structured arbitration projection and audit evidence, and must not replace the original user message.
 
 ## Why Selection Order Matters
 
@@ -102,7 +121,7 @@ score desc → source_rank asc → captured_at desc → memory_id asc
 
 ### 6. Top-k and Budget
 
-## Budgeting Without Asking a Model to Count
+## Two Budget Layers, Not One Vague Length Limit
 
 ```text
 Memory candidates
@@ -113,6 +132,19 @@ Memory candidates
 ```
 
 ## System Prompt Sections
+
+| # | Segment | Source | Condition | Total-budget policy |
+|---|---|---|---|---|
+| 1 | Base instructions | Harness rules | Always | required |
+| 2 | Identity | SOUL / IDENTITY / USER | File exists or teaching default | Optional, high value |
+| 3 | Recalled memory | S12 -> S15 selection plan | The query selected hits | Optional, medium value |
+| 4 | Project context | Workspace structure | Always built | Optional, high value |
+| 5 | Tool descriptions | Tool registry | Tools exist | required |
+| 6 | Expert instructions | Active expert | When active | Optional, high value |
+| 7 | Skill instructions | Loaded `SKILL.md` | When loaded | Optional, high value |
+| 8 | Connector status | MCP connectors | When connectors exist | Optional, lower value |
+| 9 | Regional conventions | Current region | Region-specific | Optional, low value |
+| 10 | Working mode | craft / plan / ask | Always | required |
 
 ### Display Order and Budget Values
 
@@ -129,7 +161,17 @@ Build fragments and record provenance
 
 Runtime assembly orders governed blocks, records the selected evidence, and fails closed when required context cannot fit the budget.
 
-## No-Key Prompt Boundary
+| Event | Affected segment |
+|---|---|
+| New S12 recall candidates | Memory selection and memory segment |
+| Query ends or user scope changes | Clear the memory segment to prevent leakage |
+| Skill loads | Skill instructions |
+| Expert switches | Expert instructions |
+| Working mode changes | Working mode |
+| Connector starts/stops | Connector status |
+| Identity file changes | Identity |
+
+## Demo Without an API Key
 
 ```bash
 python s15_prompt_assembly/code.py
@@ -174,42 +216,6 @@ Do not select by recency alone, mix scopes, spend the entire budget on optional 
 ## Next Lesson
 
 - This lesson gives memory selection an explicit contract for scope, confidence, authority, conflicts, deduplication, and token budget.
-
-**Reference tables**
-
-| Chapter | Owns | Does not own |
-|---|---|---|
-| S12 Remote Memory | Query normalization, candidate generation, score breakdown, stable ranking, scope, and provenance | The final decision about which hits enter the prompt |
-| S15 Prompt Assembly | Scope/confidence gates, authority, deduplication, conflicts, top-k, budgets, and prompt assembly | Retrieval scoring or long-term memory writes |
-
-| Authority | Meaning | Example |
-|---|---|---|
-| `current_turn` | Explicit requirement for the current task | "Use Go for this implementation" |
-| `workspace_override` | Local convention of the current project | "This repository uses TypeScript for automation" |
-| `user_default` | Cross-project personal default | "I usually prefer Python" |
-
-| # | Segment | Source | Condition | Total-budget policy |
-|---|---|---|---|---|
-| 1 | Base instructions | Harness rules | Always | required |
-| 2 | Identity | SOUL / IDENTITY / USER | File exists or teaching default | Optional, high value |
-| 3 | Recalled memory | S12 -> S15 selection plan | The query selected hits | Optional, medium value |
-| 4 | Project context | Workspace structure | Always built | Optional, high value |
-| 5 | Tool descriptions | Tool registry | Tools exist | required |
-| 6 | Expert instructions | Active expert | When active | Optional, high value |
-| 7 | Skill instructions | Loaded `SKILL.md` | When loaded | Optional, high value |
-| 8 | Connector status | MCP connectors | When connectors exist | Optional, lower value |
-| 9 | Regional conventions | Current region | Region-specific | Optional, low value |
-| 10 | Working mode | craft / plan / ask | Always | required |
-
-| Event | Affected segment |
-|---|---|
-| New S12 recall candidates | Memory selection and memory segment |
-| Query ends or user scope changes | Clear the memory segment to prevent leakage |
-| Skill loads | Skill instructions |
-| Expert switches | Expert instructions |
-| Working mode changes | Working mode |
-| Connector starts/stops | Connector status |
-| Identity file changes | Identity |
 
 The original Chinese README remains the primary-language reference. This English companion keeps the same code, diagrams, local paths, and chapter structure so readers can switch languages without losing runnable details.
 
