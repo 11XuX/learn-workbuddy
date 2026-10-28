@@ -69,3 +69,54 @@ def test_main_answers_and_stays_alive(monkeypatch, tmp_path, name, data) -> None
     assert to_renderer.get(timeout=5)["type"] == "pong"
     to_main.put(None)
     main.join(timeout=5)
+
+
+def test_main_preserves_utf8_stdout_and_invalid_stderr(monkeypatch, tmp_path):
+    import os
+    import shlex
+    import subprocess
+
+    script = (
+        "import sys;"
+        "sys.stdout.buffer.write(bytes([228,184,173,230,150,135])+b'OUT');"
+        "sys.stderr.buffer.write(b'ERR-START\\xffERR-END')"
+    )
+    argv = [sys.executable, "-c", script]
+    command = (
+        subprocess.list2cmdline(argv)
+        if os.name == "nt"
+        else " ".join(shlex.quote(arg) for arg in argv)
+    )
+    client = fake_client(
+        response(tool_block("stderr_case", command), stop_reason="tool_use"),
+        response(text_block("done"), stop_reason="end_turn"),
+    )
+    s05 = load_s05(monkeypatch, tmp_path, client)
+    to_main, to_renderer = queue.Queue(), queue.Queue()
+    main = threading.Thread(
+        target=s05.main_process,
+        args=(to_main, to_renderer, None),
+        daemon=True,
+    )
+    main.start()
+    try:
+        to_main.put({"type": "agent/message", "data": "inspect both streams"})
+        try:
+            reply = to_renderer.get(timeout=5)
+        except queue.Empty:
+            pytest.fail(f"Main did not reply (alive={main.is_alive()})")
+        assert reply == {"type": "result", "data": "done"}
+
+        fed = client.messages.calls[1]["messages"][2]["content"]
+        assert len(fed) == 1
+        assert fed[0]["type"] == "tool_result"
+        assert fed[0]["tool_use_id"] == "stderr_case"
+        output = fed[0]["content"]
+        assert output.startswith("中文OUTERR-START")
+        assert output.endswith("ERR-END")
+
+        to_main.put({"type": "ping"})
+        assert to_renderer.get(timeout=5)["type"] == "pong"
+    finally:
+        to_main.put(None)
+        main.join(timeout=5)
